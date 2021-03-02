@@ -56,12 +56,16 @@ def capturelmdbs(srcdir, skipdirs=None, onlydirs=None):
     with contextlib.ExitStack() as stack:
         for path in lmdbpaths:
             datafile = os.path.join(path, 'data.mdb')
+            if not os.path.isfile(datafile):
+                logger.warning(f'File note present: {datafile}')
+                continue
             stat = os.stat(datafile)
             map_size = stat.st_size
             env = stack.enter_context(
                 lmdb.open(path, map_size=map_size, max_dbs=256, create=False, readonly=True))
             txn = stack.enter_context(env.begin())
             tupl.append((path, env, txn))
+            logger.debug(f'Created txn for {datafile}')
 
         yield tupl
 
@@ -111,12 +115,13 @@ def txnbackup(lmdbinfo, srcdir, dstdir, skipdirs=None):
             dstpath = s_common.genpath(dstdir, relname)
 
             if name.endswith('.lmdb'):
-                dnames.remove(name)
                 abssrcpath = os.path.abspath(srcpath)
                 lmdbinfos = [info for info in lmdbinfo if info[0] == abssrcpath]
                 if not lmdbinfos:
                     logger.warning('lmdb file %s not copied', srcpath)
                     continue
+
+                dnames.remove(name)
 
                 assert len(lmdbinfos) == 1
 
