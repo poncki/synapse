@@ -1,4 +1,5 @@
 import os
+import logging
 
 import synapse.common as s_common
 import synapse.lib.lmdbslab as s_lmdbslab
@@ -6,6 +7,8 @@ import synapse.lib.lmdbslab as s_lmdbslab
 import synapse.tests.utils as s_t_utils
 
 import synapse.tools.backup as s_backup
+
+logger = logging.getLogger(__name__)
 
 class BackupTest(s_t_utils.SynTest):
 
@@ -60,21 +63,23 @@ class BackupTest(s_t_utils.SynTest):
             with self.getTestDir() as dirn2:
 
                 argv = (core.dirn, dirn2)
-
+                logger.info('DO THE THING')
                 self.eq(0, s_backup.main(argv))
-
+                logger.info('DONE THE THING')
                 fpset = self.compare_dirs(core.dirn, dirn2, skipfns={'lock.mdb'}, skipdirs={'tmp'})
                 self.false(os.path.exists(s_common.genpath(dirn2, 'tmp')))
 
                 # We expect the data.mdb file to be in the fpset
                 self.isin(f'/layers/{layriden}/layer_v2.lmdb/data.mdb', fpset)
 
-            # Test corner case no-lmdbinfo
-            with self.getTestDir() as dirn2:
-                with self.getLoggerStream('synapse.tools.backup') as stream:
-                    s_backup.txnbackup([], core.dirn, dirn2)
-                    stream.seek(0)
-                    self.isin('not copied', stream.read())
+            # logger.info('txn less backup')
+            # # Test corner case no-lmdbinfo
+            # with self.getTestDir() as dirn2:
+            #     with self.getLoggerStream('synapse.tools.backup') as stream:
+            #         s_backup.txnbackup([], core.dirn, dirn2)
+            #         stream.seek(0)
+            #         self.isin('not copied', stream.read())
+            # logger.info('fini')
 
     async def test_backup_exclude(self):
 

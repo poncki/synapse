@@ -50,6 +50,15 @@ def capturelmdbs(srcdir, skipdirs=None, onlydirs=None):
         srcdirglob = s_common.genpath(glob.escape(os.path.abspath(srcdir)), '**/*.lmdb')
         fniter = glob.iglob(srcdirglob, recursive=True)
         lmdbpaths = [fn for fn in fniter if not any([fnmatch.fnmatch(fn, pattern) for pattern in skipdirs])]
+        # for fn in fniter:
+        #     logger.info(f'TEsting: {fn}')
+        #     if any([fnmatch.fnmatch(fn, pattern) for pattern in skipdirs]):
+        #         logger.info(f'Skipping [{fn}]')
+        #         continue
+        #     logger.info(f'capturing [{fn}]')
+        #     lmdbpaths.append(fn)
+        for lmdbpath in lmdbpaths:
+            logger.info(f'Captured: {lmdbpath}')
 
     tupl = []
 
@@ -65,7 +74,7 @@ def capturelmdbs(srcdir, skipdirs=None, onlydirs=None):
                 lmdb.open(path, map_size=map_size, max_dbs=256, create=False, readonly=True))
             txn = stack.enter_context(env.begin())
             tupl.append((path, env, txn))
-            logger.debug(f'Created txn for {datafile}')
+            logger.info(f'Created txn for {datafile}')
 
         yield tupl
 
@@ -103,6 +112,8 @@ def txnbackup(lmdbinfo, srcdir, dstdir, skipdirs=None):
 
         for name in list(dnames):
 
+            logger.info(f'{relpath=} D{name=}')
+
             srcpath = s_common.genpath(root, name)
 
             relname = os.path.join(relpath, name)
@@ -115,6 +126,7 @@ def txnbackup(lmdbinfo, srcdir, dstdir, skipdirs=None):
             dstpath = s_common.genpath(dstdir, relname)
 
             if name.endswith('.lmdb'):
+                # dnames.remove(name)
                 abssrcpath = os.path.abspath(srcpath)
                 lmdbinfos = [info for info in lmdbinfo if info[0] == abssrcpath]
                 if not lmdbinfos:
@@ -134,6 +146,8 @@ def txnbackup(lmdbinfo, srcdir, dstdir, skipdirs=None):
             s_common.gendir(dstpath)
 
         for name in fnames:
+
+            logger.info(f'{relpath=} F{name=}')
 
             srcpath = s_common.genpath(root, name)
             # skip unix sockets etc...
