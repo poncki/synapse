@@ -683,6 +683,7 @@ workflows:
             branches:
               only:
                 - master
+                - feature_backup_lmdbdetection
 
       - gh-release/dorelease:
           requires:
