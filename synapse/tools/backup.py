@@ -112,7 +112,7 @@ def txnbackup(lmdbinfo, srcdir, dstdir, skipdirs=None):
 
         for name in list(dnames):
 
-            logger.info(f'{relpath=} D{name=}')
+            logger.info(f'{relpath} D{name}')
 
             srcpath = s_common.genpath(root, name)
 
@@ -147,7 +147,7 @@ def txnbackup(lmdbinfo, srcdir, dstdir, skipdirs=None):
 
         for name in fnames:
 
-            logger.info(f'{relpath=} F{name=}')
+            logger.info(f'{relpath} F{name}')
 
             srcpath = s_common.genpath(root, name)
             # skip unix sockets etc...
