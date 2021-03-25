@@ -376,7 +376,7 @@ class Snap(s_base.Base):
             if node is not None:
                 yield node
             else:
-                logger.debug('No node for {buid=}')
+                logger.debug(f'No node for {buid=}')
 
     async def nodesByDataName(self, name):
         for layr in self.layers:
