@@ -293,6 +293,7 @@ class Snap(s_base.Base):
 
         node = self.livenodes.get(buid)
         if node is not None:
+            logger.debug(f'Live node found {node=}')
             await asyncio.sleep(0)
             return node
 
@@ -346,6 +347,7 @@ class Snap(s_base.Base):
                 nodedata.update(stordata)
 
         if ndef is None:
+            logger.debug(f'No ndef for {buid=}')
             return None
 
         pode = (buid, {
@@ -361,15 +363,20 @@ class Snap(s_base.Base):
         self.buidcache.append(node)
 
         await asyncio.sleep(0)
+        logger.debug(f'joined node {node=}')
         return node
 
     async def _joinStorGenr(self, layr, genr):
         cache = {}
-        async for buid, sode in genr:
+        async for item in genr:
+            logger.debug(f'{item=}')
+            buid, sode = item
             cache[layr.iden] = sode
             node = await self._joinStorNode(buid, cache)
             if node is not None:
                 yield node
+            else:
+                logger.debug('No node for {buid=}')
 
     async def nodesByDataName(self, name):
         for layr in self.layers:
@@ -489,10 +496,12 @@ class Snap(s_base.Base):
                 yield node
 
     async def nodesByTag(self, tag, form=None):
+        logger.debug(f'nodesByTag!{tag=} {form=}')
         for layr in self.layers:
             genr = layr.liftByTag(tag, form=form)
             async for node in self._joinStorGenr(layr, genr):
                 if node.bylayer['tags'].get(tag) != layr:
+                    logger.debug(f'Node not present from this layer {node=}')
                     continue
                 yield node
 

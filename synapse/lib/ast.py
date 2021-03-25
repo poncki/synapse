@@ -1177,7 +1177,7 @@ class LiftTagTag(LiftOper):
 class LiftFormTag(LiftOper):
 
     async def lift(self, runt, path):
-
+        logger.debug(f'LiftFormTag {self}')
         form = await self.kids[0].compute(runt, path)
         if not runt.model.form(form):
             raise s_exc.NoSuchProp(name=form)
@@ -1193,8 +1193,9 @@ class LiftFormTag(LiftOper):
                 yield node
 
             return
-
+        logger.debug(f'Lifting by nodesByTag')
         async for node in runt.snap.nodesByTag(tag, form=form):
+            logger.debug(f'Lifted {node=}')
             yield node
 
 class LiftProp(LiftOper):

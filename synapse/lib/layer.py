@@ -1612,7 +1612,8 @@ class Layer(s_nexus.Pusher):
         except s_exc.NoSuchAbrv:
             return
 
-        for _, buid in self.layrslab.scanByPref(abrv, db=self.bytag):
+        for thing, buid in self.layrslab.scanByPref(abrv, db=self.bytag):
+            logger.debug(f'{thing=} {buid=}')
             yield buid, deepcopy(self._getStorNode(buid))
 
     async def liftByTagValu(self, tag, cmpr, valu, form=None):
