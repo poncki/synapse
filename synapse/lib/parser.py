@@ -1,8 +1,13 @@
+import os
 import ast
 import lark  # type: ignore
 import regex  # type: ignore
+import hashlib
+import pickle
+import tempfile
 
 import synapse.exc as s_exc
+import synapse.common as s_common
 
 import synapse.lib.ast as s_ast
 import synapse.lib.cache as s_cache
@@ -326,6 +331,9 @@ class AstConverter(lark.Transformer):
 
 with s_datfile.openDatFile('synapse.lib/storm.lark') as larkf:
     _grammar = larkf.read().decode()
+    _grammar_hash = hashlib.sha256(_grammar.encode())
+
+_cachedir = s_common.gendir(tempfile.gettempdir(), '.synparsecache')
 
 QueryParser = lark.Lark(_grammar, regex=True, start='query', propagate_positions=True)
 LookupParser = lark.Lark(_grammar, regex=True, start='lookup', propagate_positions=True)
@@ -363,10 +371,24 @@ class Parser:
 
         Returns (s_ast.Query):  instance of parsed query
         '''
-        try:
-            tree = QueryParser.parse(self.text)
-        except lark.exceptions.LarkError as e:
-            raise self._larkToSynExc(e) from None
+        texthash = _grammar_hash.copy()
+        texthash.update(self.text.encode())
+        textdigest = texthash.hexdigest()
+
+        savedpath = s_common.genpath(_cachedir, textdigest)
+
+        savedtree = s_common.getbytes(savedpath)
+        if savedtree:
+            tree = pickle.loads(savedtree)
+        else:
+            try:
+                tree = QueryParser.parse(self.text)
+                with tempfile.NamedTemporaryFile(mode='wb', delete=False) as fh:
+                    pickle.dump(tree, fh)
+                os.rename(fh.name, savedpath)
+
+            except lark.exceptions.LarkError as e:
+                raise self._larkToSynExc(e) from None
         newtree = AstConverter(self.text).transform(tree)
         newtree.text = self.text
         return newtree
