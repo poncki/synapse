@@ -26,6 +26,8 @@ reqValidCdef = s_config.getJsValidator({
     'properties': {
         'storm': {'type': 'string'},
         'creator': {'type': 'string', 'pattern': s_config.re_iden},
+        'name': {'type': 'string'},
+        'doc': {'type': 'string'},
         'incunit': {
             'oneOf': [
                 {'type': 'null'},
@@ -58,11 +60,11 @@ reqValidCdef = s_config.getJsValidator({
         'req': {
             'type': 'object',
             'properties': {
-                'minute': {'type': 'number'},
-                'hour': {'type': 'number'},
-                'dayofmonth': {'type': 'number'},
-                'month': {'type': 'number'},
-                'year': {'type': 'number'},
+                'minute': {'oneOf': [{'type': 'number'}, {'type': 'array', 'items': {'type': 'number'}}]},
+                'hour': {'oneOf': [{'type': 'number'}, {'type': 'array', 'items': {'type': 'number'}}]},
+                'dayofmonth': {'oneOf': [{'type': 'number'}, {'type': 'array', 'items': {'type': 'number'}}]},
+                'month': {'oneOf': [{'type': 'number'}, {'type': 'array', 'items': {'type': 'number'}}]},
+                'year': {'oneOf': [{'type': 'number'}, {'type': 'array', 'items': {'type': 'number'}}]},
             }
         }
     }
@@ -93,6 +95,7 @@ class TimeUnit(enum.IntEnum):
     DAY = enum.auto()         # every day
     HOUR = enum.auto()
     MINUTE = enum.auto()
+    NOW = enum.auto()
 
     @classmethod
     def fromString(cls, s):
@@ -433,19 +436,19 @@ class _Appt:
             self.nexttime = None
             return
 
-    async def setDoc(self, text):
+    async def setDoc(self, text, nexs=False):
         '''
         Set the doc field of an appointment.
         '''
         self.doc = text
-        await self._save()
+        await self._save(nexs=nexs)
 
-    async def setName(self, text):
+    async def setName(self, text, nexs=False):
         self.name = text
-        await self._save()
+        await self._save(nexs=nexs)
 
-    async def _save(self):
-        await self.stor._storeAppt(self)
+    async def _save(self, nexs=False):
+        await self.stor._storeAppt(self, nexs=nexs)
 
 class Agenda(s_base.Base):
     '''
@@ -464,8 +467,7 @@ class Agenda(s_base.Base):
         self._wake_event = asyncio.Event()  # Causes the scheduler loop to wake up
         self.onfini(self._wake_event.set)
 
-        self._hivedict = await self.core.hive.dict(('agenda', 'appts'))  # Persistent storage
-        self.onfini(self._hivedict)
+        self._hivenode = await self.core.hive.open(('agenda', 'appts')) # Persistent storage
         self.onfini(self.stop)
 
         self.enabled = False
@@ -484,6 +486,7 @@ class Agenda(s_base.Base):
         if self.enabled:
             return
 
+        await self._load_all()
         for iden, appt in self.appts.items():
             try:
                 self.core.getStormQuery(appt.query)
@@ -500,7 +503,7 @@ class Agenda(s_base.Base):
             return
         self._schedtask.cancel()
         for task in self._running_tasks:
-            task.cancel()
+            await task.fini()
 
         self.enabled = False
 
@@ -508,8 +511,13 @@ class Agenda(s_base.Base):
         '''
         Load all the appointments from persistent storage
         '''
+        # Clear existing appointments before loading
+        self.apptheap = []
+        self.appts = {}
+
         to_delete = []
-        for iden, val in self._hivedict.items():
+        for iden, node in iter(self._hivenode):
+            val = node.valu
             try:
                 appt = _Appt.unpack(self, val)
                 if appt.iden != iden:
@@ -523,7 +531,9 @@ class Agenda(s_base.Base):
                 continue
 
         for iden in to_delete:
-            await self._hivedict.pop(iden)
+            node = self._hivenode.get(iden)
+            if node is not None:
+                await node.hive.pop(node.full)
 
         # Make sure we don't assign the same index to 2 appointments
         if self.appts:
@@ -540,9 +550,10 @@ class Agenda(s_base.Base):
         if self.apptheap and self.apptheap[0] is appt:
             self._wake_event.set()
 
-    async def _storeAppt(self, appt):
+    async def _storeAppt(self, appt, nexs=False):
         ''' Store a single appointment '''
-        await self._hivedict.set(appt.iden, appt.pack())
+        full = self._hivenode.full + (appt.iden,)
+        await self.core.hive.set(full, appt.pack(), nexs=nexs)
 
     @staticmethod
     def _dictproduct(rdict):
@@ -571,17 +582,18 @@ class Agenda(s_base.Base):
         Persistently adds an appointment
 
         Args:
-            query (str):
-                storm query to run
-            reqs (Union[None, Dict[TimeUnit, Union[int, Tuple[int]], List[...]):
-                one or more dicts of the fixed aspects of the appointment.  dict value may be a single or multiple.
-                May be an empty dict or None.
-            incunit (Union[None, TimeUnit]):
-                the unit that changes for recurring, or None for non-recurring.  It is an error for this value to match
-                a key in reqdict.
-            incvals (Union[None, int, Iterable[int]): count of units of incunit or explicit day of week or day of month.
-                Not allowed for incunit == None, required for others (1 would be a typical
-                value)
+            cdef (dict):  May contain the following keys:
+                creator (str):  iden of the creating user
+                iden (str): Iden of the appointment
+                storm (str): storm query to run
+                reqs (Union[None, Dict[TimeUnit, Union[int, Tuple[int]], List[...]):
+                    one or more dicts of the fixed aspects of the appointment.  dict value may be a single or multiple.
+                    May be an empty dict or None.
+                incunit (Union[None, TimeUnit]):
+                    the unit that changes for recurring, or None for non-recurring.  It is an error for this value to
+                    match a key in reqdict.
+                incvals (Union[None, int, Iterable[int]): count of units of incunit or explicit day of week or day of
+                    month.  Not allowed for incunit == None, required for others (1 would be a typical value)
 
         Notes:
             For values in reqs that are lists and incvals if a list, all combinations of all values (the product) are
@@ -605,7 +617,10 @@ class Agenda(s_base.Base):
             raise s_exc.DupIden()
 
         if not query:
-            raise ValueError('empty query')
+            raise ValueError('"query" key of cdef parameter is not present or empty')
+
+        if not creator:
+            raise ValueError('"creator" key is cdef parameter is not present or empty')
 
         if not reqs and incunit is None:
             raise ValueError('at least one of reqs and incunit must be non-empty')
@@ -617,15 +632,22 @@ class Agenda(s_base.Base):
             reqs = [reqs]
 
         # Find all combinations of values in reqdict values and incvals values
+        nexttime = None
         recs = []  # type: ignore
         for req in reqs:
+            if TimeUnit.NOW in req:
+                if incunit is not None:
+                    mesg = "Recurring jobs may not be scheduled to run 'now'"
+                    raise ValueError(mesg)
+                nexttime = time.time()
+                continue
 
             reqdicts = self._dictproduct(req)
             if not isinstance(incvals, Iterable):
                 incvals = (incvals, )
             recs.extend(ApptRec(rd, incunit, v) for (rd, v) in itertools.product(reqdicts, incvals))
 
-        appt = _Appt(self, iden, recur, indx, query, creator, recs)
+        appt = _Appt(self, iden, recur, indx, query, creator, recs, nexttime)
         self._addappt(iden, appt)
 
         appt.doc = cdef.get('doc', '')
@@ -699,7 +721,9 @@ class Agenda(s_base.Base):
                 heapq.heapify(self.apptheap)
 
         del self.appts[iden]
-        await self._hivedict.pop(iden)
+        node = self._hivenode.get(iden)
+        if node is not None:
+            await node.hive.pop(node.full)
 
     async def _scheduleLoop(self):
         '''
@@ -744,6 +768,13 @@ class Agenda(s_base.Base):
             logger.warning('Unknown user %s in stored appointment', appt.creator)
             await self._markfailed(appt)
             return
+
+        locked = user.info.get('locked')
+        if locked:
+            logger.warning('Cron failed because creator %s is locked', user.name)
+            await self._markfailed(appt)
+            return
+
         info = {'iden': appt.iden, 'query': appt.query}
         task = await self.core.boss.execute(self._runJob(user, appt), f'Cron {appt.iden}', user, info=info)
         self._running_tasks.append(task)
@@ -756,7 +787,7 @@ class Agenda(s_base.Base):
         appt.isrunning = False
         appt.lastresult = 'Failed due to unknown user'
         if not self.isfini:
-            await self._storeAppt(appt)
+            await self._storeAppt(appt, nexs=True)
 
     async def _runJob(self, user, appt):
         '''
@@ -766,7 +797,7 @@ class Agenda(s_base.Base):
         appt.isrunning = True
         appt.laststarttime = time.time()
         appt.startcount += 1
-        await self._storeAppt(appt)
+        await self._storeAppt(appt, nexs=True)
 
         with s_provenance.claim('cron', iden=appt.iden):
             logger.info('Agenda executing for iden=%s, user=%s, query={%s}', appt.iden, user.name, appt.query)
@@ -791,4 +822,4 @@ class Agenda(s_base.Base):
                 appt.isrunning = False
                 appt.lastresult = result
                 if not self.isfini:
-                    await self._storeAppt(appt)
+                    await self._storeAppt(appt, nexs=True)

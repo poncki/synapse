@@ -20,6 +20,26 @@ class TypesTest(s_t_utils.SynTest):
         self.none(t.getCompOffs('newp'))
         self.raises(s_exc.NoSuchCmpr, t.cmpr, val1=1, name='newp', val2=0)
 
+    def test_duration(self):
+        model = s_datamodel.Model()
+        t = model.type('duration')
+
+        self.eq('00:05:00.333', t.repr(300333))
+        self.eq('11D 11:47:12.344', t.repr(992832344))
+
+        self.eq(300333, t.norm('00:05:00.333')[0])
+        self.eq(992832344, t.norm('11D 11:47:12.344')[0])
+
+        self.eq(60000, t.norm('1:00')[0])
+        self.eq(60200, t.norm('1:00.2')[0])
+        self.eq(9999, t.norm('9.9999')[0])
+
+        with self.raises(s_exc.BadTypeValu):
+            t.norm('1:2:3:4')
+
+        with self.raises(s_exc.BadTypeValu):
+            t.norm('1:a:b')
+
     def test_bool(self):
         model = s_datamodel.Model()
         t = model.type('bool')
@@ -350,6 +370,13 @@ class TypesTest(s_t_utils.SynTest):
         self.eq((1448150400000, 1451606400000), ival.norm(('2016', '-40 days'))[0])
         self.eq((1447891200000, 1451347200000), ival.norm(('2016-3days', '-40 days   '))[0])
         self.eq((1451347200000, 0x7fffffffffffffff), ival.norm(('2016-3days', '?'))[0])
+        self.eq((1593576000000, 1593576000001), ival.norm('2020-07-04:00')[0])
+        self.eq((1594124993000, 1594124993001), ival.norm('2020-07-07T16:29:53+04:00')[0])
+        self.eq((1594153793000, 1594153793001), ival.norm('2020-07-07T16:29:53-04:00')[0])
+        self.eq((1594211393000, 1594211393001), ival.norm('20200707162953+04:00+1day')[0])
+        self.eq((1594038593000, 1594038593001), ival.norm('20200707162953+04:00-1day')[0])
+        self.eq((1594240193000, 1594240193001), ival.norm('20200707162953-04:00+1day')[0])
+        self.eq((1594067393000, 1594067393001), ival.norm('20200707162953-04:00-1day')[0])
 
         start = s_common.now() + s_time.oneday - 1
         end = ival.norm(('now', '+1day'))[0][1]
@@ -358,6 +385,8 @@ class TypesTest(s_t_utils.SynTest):
         oldv = ival.norm(('2016', '2017'))[0]
         newv = ival.norm(('2015', '2018'))[0]
         self.eq((1420070400000, 1514764800000), ival.merge(oldv, newv))
+
+        self.eq((1420070400000, 1420070400001), ival.norm(('2015', '2015'))[0])
 
         self.raises(s_exc.BadTypeValu, ival.norm, '?')
         self.raises(s_exc.BadTypeValu, ival.norm, ('', ''))
@@ -446,6 +475,7 @@ class TypesTest(s_t_utils.SynTest):
             await self.agenlen(1, core.eval('test:ival@=("now-3days", "now+3days")'))
             await self.agenlen(0, core.eval('test:ival@=("1993", "1995")'))
             await self.agenlen(0, core.eval('test:ival@=("1997", "1998")'))
+            await self.agenlen(1, core.eval('test:ival=("1995", "1997")'))
 
             await self.agenlen(1, core.eval('test:ival:interval@="now+2days"'))
             await self.agenlen(0, core.eval('test:ival:interval@=("now-4days","now-3days")'))
@@ -543,14 +573,12 @@ class TypesTest(s_t_utils.SynTest):
             await self.agenraises(s_exc.BadTypeValu, core.eval(q))
             q = '[test:str=newp  .seen=("?","?")]'
             await self.agenraises(s_exc.BadTypeValu, core.eval(q))
-            q = '[test:str=newp  .seen=(2018/03/31,2018/03/31)]'
-            await self.agenraises(s_exc.BadTypeValu, core.eval(q))
             q = '[test:str=newp .seen=(2008, 2019, 2000)]'
             await self.agenraises(s_exc.BadTypeValu, core.eval(q))
             q = '[test:str=newp .seen=("?","-1 day")]'
             await self.agenraises(s_exc.BadTypeValu, core.eval(q))
             # *range= not supported for ival
-            q = 'test:str +:.seen*range=((20090601, 20090701), (20110905, 20110906,))'
+            q = 'test:str +.seen*range=((20090601, 20090701), (20110905, 20110906,))'
             await self.agenraises(s_exc.NoSuchCmpr, core.eval(q))
             q = 'test:str.seen*range=((20090601, 20090701), (20110905, 20110906,))'
             await self.agenraises(s_exc.NoSuchCmpr, core.eval(q))
@@ -1061,7 +1089,7 @@ class TypesTest(s_t_utils.SynTest):
                     ('int', ('test:int', {}), {}),
                 )),
                 ('test:witharray', {}, (
-                    ('fqdns', ('array', {'type': 'inet:fqdn', 'uniq': True, 'sorted': True}), {}),
+                    ('fqdns', ('array', {'type': 'inet:fqdn', 'uniq': True, 'sorted': True, 'split': ','}), {}),
                 )),
             ),
         }
@@ -1071,6 +1099,9 @@ class TypesTest(s_t_utils.SynTest):
 
             with self.raises(s_exc.BadTypeDef):
                 await core.addFormProp('test:int', '_hehe', ('array', {'type': 'array'}), {})
+
+            with self.raises(s_exc.BadTypeDef):
+                await core.addFormProp('test:int', '_hehe', ('array', {'type': 'newp'}), {})
 
             nodes = await core.nodes('[ test:array=(1.2.3.4, 5.6.7.8) ]')
             self.len(1, nodes)
@@ -1087,6 +1118,9 @@ class TypesTest(s_t_utils.SynTest):
             nodes = await core.nodes('test:array*[=1.2.3.4]')
             self.len(0, nodes)
 
+            with self.raises(s_exc.BadTypeValu):
+                await core.nodes('[ test:arraycomp=("1.2.3.4, 5.6.7.8", 10) ]')
+
             nodes = await core.nodes('[ test:arraycomp=((1.2.3.4, 5.6.7.8), 10) ]')
             self.len(1, nodes)
             self.eq(nodes[0].ndef, ('test:arraycomp', ((0x01020304, 0x05060708), 10)))
@@ -1097,10 +1131,11 @@ class TypesTest(s_t_utils.SynTest):
             nodes = await core.nodes('inet:ipv4=1.2.3.4 inet:ipv4=5.6.7.8')
             self.len(2, nodes)
 
-            nodes = await core.nodes('[ test:witharray="*" :fqdns=(woot.com, VERTEX.LINK, vertex.link) ]')
+            nodes = await core.nodes('[ test:witharray="*" :fqdns="woot.com, VERTEX.LINK, vertex.link" ]')
             self.len(1, nodes)
 
             self.eq(nodes[0].get('fqdns'), ('vertex.link', 'woot.com'))
+            self.sorteq(('vertex.link', 'woot.com'), nodes[0].repr('fqdns').split(','))
 
             nodes = await core.nodes('test:witharray:fqdns=(vertex.link, WOOT.COM)')
             self.len(1, nodes)

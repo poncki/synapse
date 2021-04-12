@@ -4,31 +4,35 @@ import synapse.common as s_common
 
 import synapse.lib.stormtypes as s_stormtypes
 
+@s_stormtypes.registry.registerLib
 class LibWhois(s_stormtypes.Lib):
     '''
-    WHOIS / Registration Data client for Storm.
+    A Storm Library for providing a consistent way to generate guids for WHOIS / Registration Data in Storm.
     '''
-
-    def addLibFuncs(self):
-        self.locls.update({
-            'guid': self._whoisGuid,
-        })
-
-    async def _whoisGuid(self, props, form):
-        '''
+    _storm_locals = (
+        {'name': 'guid',
+         'desc': '''
         Provides standard patterns for creating guids for certain inet:whois forms.
 
-        Args:
-            props (dict): Dictionary of properties used to create the form
-            form (str): The inet:whois form to create the guid for
-
-        Returns:
-            (str): A guid from synapse.common
-
         Raises:
-            StormRuntimeError: If form is not supported in this method
-        '''
+            StormRuntimeError: If form is not supported in this method.''',
+         'type': {'type': 'function', '_funcname': '_whoisGuid',
+                  'args': (
+                      {'name': 'props', 'type': 'dict', 'desc': 'Dictionary of properties used to create the form.', },
+                      {'name': 'form', 'type': 'str', 'desc': 'The ``inet:whois`` form to create the guid for.', },
+                  ),
+                  'returns': {'type': 'str', 'desc': 'A guid for creating a the node for.', }}},
+    )
+    _storm_lib_path = ('inet', 'whois')
 
+    def getObjLocals(self):
+        return {
+             'guid': self._whoisGuid,
+         }
+
+    async def _whoisGuid(self, props, form):
+        form = await s_stormtypes.tostr(form)
+        props = await s_stormtypes.toprim(props)
         if form == 'iprec':
             guid_props = ('net4', 'net6', 'asof', 'id')
         elif form == 'ipcontact':

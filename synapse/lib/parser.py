@@ -19,12 +19,14 @@ terminalEnglishMap = {
     'ABSPROPNOUNIV': 'absolute property',
     'ALLTAGS': '#',
     'AND': 'and',
+    'BOOL': 'boolean',
     'BREAK': 'break',
     'CASEBARE': 'case value',
     'CCOMMENT': 'C comment',
     'CMDOPT': 'command line option',
     'CMDNAME': 'command name',
     'CMDRTOKN': 'An unquoted string parsed as a cmdr arg',
+    'WHITETOKN': 'An unquoted string terminated by whitespace',
     'CMPR': 'comparison operator',
     'BYNAME': 'named comparison operator',
     'COLON': ':',
@@ -89,7 +91,6 @@ terminalEnglishMap = {
     '_EDGEDELN2INIT': '<(',
     '_EDGEDELN2FINI': ')-',
     '_EMBEDQUERYSTART': '${',
-    '_EXPRSTART': '$(',
     '_LEFTJOIN': '<+-',
     '_LEFTPIVOT': '<-',
     '_WALKNPIVON1': '-->',
@@ -159,9 +160,31 @@ class AstConverter(lark.Transformer):
 
         return subq
 
+    @lark.v_args(meta=True)
+    def argvquery(self, kids, meta):
+        assert len(kids) == 1
+
+        epos = getattr(meta, 'end_pos', 0)
+        spos = getattr(meta, 'start_pos', 0)
+
+        argq = s_ast.ArgvQuery(kids)
+        argq.text = self.text[spos:epos]
+
+        return argq
+
+    def looklist(self, kids):
+        kids = self._convert_children(kids)
+        return s_ast.Lookup(kids)
+
     def yieldvalu(self, kids):
         kid = self._convert_child(kids[-1])
         return s_ast.YieldValu(kids=[kid])
+
+    @lark.v_args(meta=True)
+    def lookup(self, kids, meta):
+        kids = self._convert_children(kids)
+        look = s_ast.Lookup(kids=kids)
+        return look
 
     @lark.v_args(meta=True)
     def query(self, kids, meta):
@@ -208,15 +231,8 @@ class AstConverter(lark.Transformer):
 
     def stormcmdargs(self, kids):
         kids = self._convert_children(kids)
-        argv = []
 
-        for kid in kids:
-            if isinstance(kid, s_ast.SubQuery):
-                argv.append(s_ast.Const(kid.text))
-            else:
-                argv.append(self._convert_child(kid))
-
-        return s_ast.List(None, kids=argv)
+        return s_ast.List(kids=kids)
 
     def cmdrargs(self, kids):
         argv = []
@@ -281,7 +297,7 @@ class AstConverter(lark.Transformer):
 
     def valulist(self, kids):
         kids = self._convert_children(kids)
-        return s_ast.List(None, kids=kids)
+        return s_ast.List(kids=kids)
 
     def univpropvalu(self, kids):
         kids = self._convert_children(kids)
@@ -311,11 +327,9 @@ class AstConverter(lark.Transformer):
 with s_datfile.openDatFile('synapse.lib/storm.lark') as larkf:
     _grammar = larkf.read().decode()
 
-QueryParser = lark.Lark(_grammar, start='query', propagate_positions=True)
-StormCmdParser = lark.Lark(_grammar, start='stormcmdargs', propagate_positions=True)
-CmdrParser = lark.Lark(_grammar, start='cmdrargs', propagate_positions=True)
-
-_eofre = regex.compile(r'''Terminal\('(\w+)'\)''')
+QueryParser = lark.Lark(_grammar, regex=True, start='query', propagate_positions=True)
+LookupParser = lark.Lark(_grammar, regex=True, start='lookup', propagate_positions=True)
+CmdrParser = lark.Lark(_grammar, regex=True, start='cmdrargs', propagate_positions=True)
 
 class Parser:
     '''
@@ -328,25 +342,18 @@ class Parser:
         self.text = text.strip()
         self.size = len(self.text)
 
-    def _eofParse(self, mesg):
-        '''
-        Takes a string like "Unexpected end of input! Expecting a terminal of: [Terminal('FOR'), ...] and returns
-        a unique'd set of terminal names.
-        '''
-        return sorted(set(_eofre.findall(mesg)))
-
     def _larkToSynExc(self, e):
         '''
         Convert lark exception to synapse badGrammar exception
         '''
-        mesg = regex.split('[\n!]', e.args[0])[0]
+        mesg = regex.split('[\n!]', str(e))[0]
         at = len(self.text)
         if isinstance(e, lark.exceptions.UnexpectedCharacters):
             mesg += f'.  Expecting one of: {", ".join(terminalEnglishMap[t] for t in sorted(set(e.allowed)))}'
             at = e.pos_in_stream
-        elif isinstance(e, lark.exceptions.ParseError):
-            if mesg == 'Unexpected end of input':
-                mesg += f'.  Expecting one of: {", ".join(terminalEnglishMap[t] for t in self._eofParse(e.args[0]))}'
+        elif isinstance(e, lark.exceptions.UnexpectedEOF):
+            expected = sorted(set(e.expected))
+            mesg += ' ' + ', '.join(terminalEnglishMap[t] for t in expected)
 
         return s_exc.BadSyntax(at=at, text=self.text, mesg=mesg)
 
@@ -364,6 +371,15 @@ class Parser:
         newtree.text = self.text
         return newtree
 
+    def lookup(self):
+        try:
+            tree = LookupParser.parse(self.text)
+        except lark.exceptions.LarkError as e:
+            raise self._larkToSynExc(e) from None
+        newtree = AstConverter(self.text).transform(tree)
+        newtree.text = self.text
+        return newtree
+
     def cmdrargs(self):
         '''
         Parse command args that might have storm queries as arguments
@@ -375,10 +391,18 @@ class Parser:
         return AstConverter(self.text).transform(tree)
 
 @s_cache.memoize(size=100)
-def parseQuery(text):
+def parseQuery(text, mode='storm'):
     '''
     Parse a storm query and return the Lark AST.  Cached here to speed up unit tests
     '''
+    if mode == 'lookup':
+        return Parser(text).lookup()
+
+    if mode == 'autoadd':
+        look = Parser(text).lookup()
+        look.autoadd = True
+        return look
+
     return Parser(text).query()
 
 def massage_vartokn(x):
@@ -395,6 +419,7 @@ terminalClassMap = {
     'DOUBLEQUOTEDSTRING': lambda x: s_ast.Const(unescape(x)),  # drop quotes and handle escape characters
     'NUMBER': lambda x: s_ast.Const(s_ast.parseNumber(x)),
     'HEXNUMBER': lambda x: s_ast.Const(s_ast.parseNumber(x)),
+    'BOOL': lambda x: s_ast.Bool(x == 'true'),
     'SINGLEQUOTEDSTRING': lambda x: s_ast.Const(x[1:-1]),  # drop quotes
     'TAGMATCH': lambda x: s_ast.TagMatch(kids=AstConverter._tagsplit(x)),
     'VARTOKN': massage_vartokn,
@@ -415,6 +440,7 @@ ruleClassMap = {
     'editparens': s_ast.EditParens,
     'initblock': s_ast.InitBlock,
     'finiblock': s_ast.FiniBlock,
+    'formname': s_ast.FormName,
     'editpropdel': s_ast.EditPropDel,
     'editpropset': s_ast.EditPropSet,
     'edittagadd': s_ast.EditTagAdd,
@@ -423,8 +449,8 @@ ruleClassMap = {
     'edittagpropdel': s_ast.EditTagPropDel,
     'editunivdel': s_ast.EditUnivDel,
     'editunivset': s_ast.EditPropSet,
-    'expror': s_ast.ExprNode,
-    'exprand': s_ast.ExprNode,
+    'expror': s_ast.ExprOrNode,
+    'exprand': s_ast.ExprAndNode,
     'exprnot': s_ast.UnaryExprNode,
     'exprcmp': s_ast.ExprNode,
     'exprproduct': s_ast.ExprNode,
@@ -509,12 +535,12 @@ JUSTCHARS: /[^()=\[\]{}'"\s]*[^,()=\[\]{}'"\s]/
 
 CmdStringParser = lark.Lark(CmdStringGrammar,
                             start='cmdstring',
-                            ambiguity='explicit',
+                            regex=True,
                             propagate_positions=True)
 
 def parse_cmd_string(text, off):
     '''
-    Parse in a command line string which may be quoted.
+    Parse a command line string which may be quoted.
     '''
     tree = CmdStringParser.parse(text[off:])
     assert '_ambig' not in str(tree)

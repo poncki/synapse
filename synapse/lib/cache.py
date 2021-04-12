@@ -2,6 +2,7 @@
 A few speed optimized (lockless) cache helpers.  Use carefully.
 '''
 import asyncio
+import weakref
 import functools
 import collections
 
@@ -12,6 +13,27 @@ import synapse.common as s_common
 
 def memoize(size=16384):
     return functools.lru_cache(maxsize=size)
+
+# From https://stackoverflow.com/a/33672499/6518334
+def memoizemethod(size=16384):
+    '''
+    A version of memoize that doesn't cause GC cycles when applied to a method.
+    '''
+    def decorator(func):
+        @functools.wraps(func)
+        def wrapped_func(self, *args, **kwargs):
+            # We're storing the wrapped method inside the instance. If we had
+            # a strong reference to self the instance would never die.
+            self_weak = weakref.ref(self)
+
+            @functools.wraps(func)
+            @functools.lru_cache(maxsize=size)
+            def cached_method(*args, **kwargs):
+                return func(self_weak(), *args, **kwargs)
+            setattr(self, func.__name__, cached_method)
+            return cached_method(*args, **kwargs)
+        return wrapped_func
+    return decorator
 
 class FixedCache:
 
@@ -27,16 +49,20 @@ class FixedCache:
         return len(self.cache)
 
     def pop(self, key):
-        return self.cache.pop(key, None)
+        val = self.cache.pop(key, s_common.novalu)
+        if val is s_common.novalu:
+            return None
+
+        self.fifo.remove(key)
+        return val
 
     def put(self, key, val):
+        while len(self.fifo) > self.size - 1:
+            delkey = self.fifo.popleft()
+            self.cache.pop(delkey, None)
 
         self.cache[key] = val
         self.fifo.append(key)
-
-        while len(self.fifo) > self.size:
-            key = self.fifo.popleft()
-            self.cache.pop(key, None)
 
     def get(self, key):
         if self.iscorocall:
@@ -50,13 +76,7 @@ class FixedCache:
         if valu is s_common.novalu:
             return valu
 
-        self.cache[key] = valu
-        self.fifo.append(key)
-
-        while len(self.fifo) > self.size:
-            key = self.fifo.popleft()
-            self.cache.pop(key, None)
-
+        self.put(key, valu)
         return valu
 
     async def aget(self, key):
@@ -71,13 +91,7 @@ class FixedCache:
         if valu is s_common.novalu:
             return valu
 
-        self.cache[key] = valu
-        self.fifo.append(key)
-
-        while len(self.fifo) > self.size:
-            key = self.fifo.popleft()
-            self.cache.pop(key, None)
-
+        self.put(key, valu)
         return valu
 
     def clear(self):
@@ -187,7 +201,7 @@ class TagGlobs:
             def fini():
                 try:
                     self.globs.remove(glob)
-                except ValueError:
+                except ValueError:  # pragma: no cover
                     pass
                 self.cache.clear()
             base.onfini(fini)

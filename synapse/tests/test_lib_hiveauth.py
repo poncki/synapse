@@ -6,140 +6,136 @@ import synapse.tests.utils as s_test
 from synapse.tests.utils import alist
 
 import synapse.lib.hive as s_hive
+import synapse.lib.nexus as s_nexus
 import synapse.lib.hiveauth as s_hiveauth
 
 class AuthTest(s_test.SynTest):
 
     async def test_hive_auth(self):
 
-        async with self.getTestTeleHive() as hive:
+        with self.getTestDir() as testdirn:
 
-            node = await hive.open(('hive', 'auth'))
+            async with self.getTestTeleHive() as hive:
 
-            async with await s_hiveauth.Auth.anit(node) as auth:
+                nexsroot = await s_nexus.NexsRoot.anit(testdirn)
+                await nexsroot.startup(None)
 
-                user = await auth.addUser('visi@vertex.link')
-                role = await auth.addRole('ninjas')
+                node = await hive.open(('hive', 'auth'))
 
-                self.eq(user, auth.user(user.iden))
-                self.eq(user, await auth.getUserByName('visi@vertex.link'))
+                async with await s_hiveauth.Auth.anit(node, nexsroot=nexsroot) as auth:
 
-                self.eq(role, auth.role(role.iden))
-                self.eq(role, await auth.getRoleByName('ninjas'))
+                    auth.onfini(nexsroot.fini)
 
-                with self.raises(s_exc.DupUserName):
-                    await auth.addUser('visi@vertex.link')
+                    user = await auth.addUser('visi@vertex.link')
+                    role = await auth.addRole('ninjas')
 
-                with self.raises(s_exc.DupRoleName):
-                    await auth.addRole('ninjas')
+                    self.eq(user, auth.user(user.iden))
+                    self.eq(user, await auth.getUserByName('visi@vertex.link'))
 
-                self.nn(user)
+                    self.eq(role, auth.role(role.iden))
+                    self.eq(role, await auth.getRoleByName('ninjas'))
 
-                self.false(user.info.get('admin'))
-                self.len(0, user.info.get('rules'))
-                self.len(1, user.info.get('roles'))
+                    with self.raises(s_exc.DupUserName):
+                        await auth.addUser('visi@vertex.link')
 
-                await user.setAdmin(True)
-                self.true(user.info.get('admin'))
+                    with self.raises(s_exc.DupRoleName):
+                        await auth.addRole('ninjas')
 
-                self.true(user.allowed(('foo', 'bar')))
+                    self.nn(user)
 
-                await user.addRule((True, ('foo',)))
+                    self.false(user.info.get('admin'))
+                    self.len(0, user.info.get('rules'))
+                    self.len(1, user.info.get('roles'))
 
-                self.true(user.allowed(('foo', 'bar')))
+                    await user.setAdmin(True)
+                    self.true(user.info.get('admin'))
+                    self.true(user.allowed(('foo', 'bar')))
 
-                self.len(1, user.permcache)
+                    await user.addRule((True, ('foo',)))
+                    self.true(user.allowed(('foo', 'bar')))
+                    self.len(1, user.permcache)
 
-                await user.delRule((True, ('foo',)))
+                    await user.delRule((True, ('foo',)))
+                    self.len(0, user.permcache)
 
-                self.len(0, user.permcache)
+                    await user.addRule((True, ('foo',)))
+                    await user.grant(role.iden)
+                    self.len(0, user.permcache)
+                    self.true(user.allowed(('baz', 'faz')))
+                    self.len(1, user.permcache)
 
-                await user.addRule((True, ('foo',)))
+                    await role.addRule((True, ('baz', 'faz')))
+                    self.len(0, user.permcache)
+                    self.true(user.allowed(('baz', 'faz')))
+                    self.len(1, user.permcache)
 
-                await user.grant(role.iden)
+                    await user.setLocked(True)
+                    self.false(user.allowed(('baz', 'faz')))
 
-                self.len(0, user.permcache)
+                    await user.setAdmin(False)
+                    await user.setLocked(False)
 
-                self.true(user.allowed(('baz', 'faz')))
+                    self.true(user.allowed(('baz', 'faz')))
+                    self.true(user.allowed(('foo', 'bar')))
 
-                self.len(1, user.permcache)
+                    # Add a DENY to the beginning of the rule list
+                    await role.addRule((False, ('baz', 'faz')), indx=0)
+                    self.false(user.allowed(('baz', 'faz')))
 
-                await role.addRule((True, ('baz', 'faz')))
+                    # Delete the DENY
+                    await role.delRule((False, ('baz', 'faz')))
 
-                self.len(0, user.permcache)
+                    # After deleting, former ALLOW rule applies
+                    self.true(user.allowed(('baz', 'faz')))
 
-                self.true(user.allowed(('baz', 'faz')))
+                    # non-existent rule returns default
+                    self.none(user.allowed(('boo', 'foo')))
+                    self.eq('yolo', user.allowed(('boo', 'foo'), default='yolo'))
 
-                self.len(1, user.permcache)
+                    await self.asyncraises(s_exc.NoSuchRole, user.revoke('newp'))
 
-                await user.setLocked(True)
+                    await user.revoke(role.iden)
+                    self.none(user.allowed(('baz', 'faz')))
 
-                self.false(user.allowed(('baz', 'faz')))
+                    await user.grant(role.iden)
+                    self.true(user.allowed(('baz', 'faz')))
 
-                await user.setAdmin(False)
-                await user.setLocked(False)
+                    await self.asyncraises(s_exc.NoSuchRole, auth.delRole('accountants'))
 
-                self.true(user.allowed(('baz', 'faz')))
-                self.true(user.allowed(('foo', 'bar')))
+                    await auth.delRole(role.iden)
+                    self.false(user.allowed(('baz', 'faz')))
 
-                # Add a DENY to the beginning of the rule list
-                await role.addRule((False, ('baz', 'faz')), indx=0)
-                self.false(user.allowed(('baz', 'faz')))
+                    await self.asyncraises(s_exc.NoSuchUser, auth.delUser('fred@accountancy.com'))
 
-                # Delete the DENY
-                await role.delRule((False, ('baz', 'faz')))
+                    await auth.delUser(user.iden)
+                    self.false(user.allowed(('baz', 'faz')))
 
-                # After deleting, former ALLOW rule applies
-                self.true(user.allowed(('baz', 'faz')))
+                    role = await auth.addRole('lolusers')
+                    role2 = await auth.addRole('lolusers2')
 
-                # non-existent rule returns default
-                self.none(user.allowed(('boo', 'foo')))
-                self.eq('yolo', user.allowed(('boo', 'foo'), default='yolo'))
+                    self.none(await role.setName('lolusers'))
 
-                await self.asyncraises(s_exc.NoSuchRole, user.revoke('newp'))
+                    with self.raises(s_exc.DupRoleName):
+                        await role2.setName('lolusers')
 
-                await user.revoke(role.iden)
-                self.none(user.allowed(('baz', 'faz')))
+                    await role.setName('roflusers')
 
-                await user.grant(role.iden)
-                self.true(user.allowed(('baz', 'faz')))
+                    self.nn(await auth.getRoleByName('roflusers'))
+                    self.none(await auth.getRoleByName('lolusers'))
 
-                await self.asyncraises(s_exc.NoSuchRole, auth.delRole('accountants'))
+                    user = await auth.addUser('user1')
+                    user2 = await auth.addUser('user')
 
-                await auth.delRole(role.iden)
-                self.false(user.allowed(('baz', 'faz')))
+                    # No problem if the user sets her own name to herself
+                    self.none(await user.setName('user1'))
 
-                await self.asyncraises(s_exc.NoSuchUser, auth.delUser('fred@accountancy.com'))
+                    with self.raises(s_exc.DupUserName):
+                        await user2.setName('user1')
 
-                await auth.delUser(user.iden)
-                self.false(user.allowed(('baz', 'faz')))
+                    await user.setName('user2')
 
-                role = await auth.addRole('lolusers')
-                role2 = await auth.addRole('lolusers2')
-
-                self.none(await role.setName('lolusers'))
-
-                with self.raises(s_exc.DupRoleName):
-                    await role2.setName('lolusers')
-
-                await role.setName('roflusers')
-
-                self.nn(await auth.getRoleByName('roflusers'))
-                self.none(await auth.getRoleByName('lolusers'))
-
-                user = await auth.addUser('user1')
-                user2 = await auth.addUser('user')
-
-                # No problem if the user sets her own name to herself
-                self.none(await user.setName('user1'))
-
-                with self.raises(s_exc.DupUserName):
-                    await user2.setName('user1')
-
-                await user.setName('user2')
-
-                self.nn(await auth.getUserByName('user2'))
-                self.none(await auth.getUserByName('user1'))
+                    self.nn(await auth.getUserByName('user2'))
+                    self.none(await auth.getUserByName('user1'))
 
     async def test_hive_tele_auth(self):
 
@@ -340,3 +336,29 @@ class AuthTest(s_test.SynTest):
             async with self.getTestCoreAndProxy(dirn=fdir) as (core, prox):
                 self.none(await core.auth.getUserByName('fred'))
                 self.none(await core.auth.getRoleByName('friends'))
+
+    async def test_hive_auth_invalid(self):
+
+        async with self.getTestCore() as core:
+            with self.raises(s_exc.BadArg):
+                await core.auth.rootuser.setName(1)
+            with self.raises(s_exc.BadArg):
+                await core.auth.allrole.setName(1)
+            with self.raises(s_exc.SchemaViolation):
+                await core.auth.rootuser.addRule('vi.si')
+            with self.raises(s_exc.SchemaViolation):
+                await core.auth.rootuser.setRules(None)
+            with self.raises(s_exc.SchemaViolation):
+                await core.auth.allrole.setRules(None)
+            with self.raises(s_exc.BadArg):
+                await core.auth.rootuser.setAdmin('lol')
+            with self.raises(s_exc.BadArg):
+                await core.auth.rootuser.setLocked('lol')
+            with self.raises(s_exc.BadArg):
+                await core.auth.rootuser.setArchived('lol')
+            with self.raises(s_exc.SchemaViolation):
+                await core.auth.allrole.addRule((1, ('hehe', 'haha')))
+            with self.raises(s_exc.SchemaViolation):
+                await core.auth.allrole.setRules([(True, ('hehe', 'haha'), 'newp')])
+            with self.raises(s_exc.SchemaViolation):
+                await core.auth.allrole.setRules([(True, )])

@@ -1,13 +1,44 @@
 import os
+import sys
+import time
+import tarfile
 import asyncio
+
+from unittest import mock
 
 import synapse.exc as s_exc
 import synapse.common as s_common
 import synapse.telepath as s_telepath
 
+import synapse.lib.base as s_base
 import synapse.lib.cell as s_cell
+import synapse.lib.coro as s_coro
+import synapse.lib.link as s_link
 
 import synapse.tests.utils as s_t_utils
+
+# Defective versions of spawned backup processes
+def _sleeperProc(pipe, srcdir, dstdir, lmdbpaths, loglevel):
+    time.sleep(3.0)
+
+def _sleeper2Proc(pipe, srcdir, dstdir, lmdbpaths, loglevel):
+    time.sleep(2.0)
+
+def _exiterProc(pipe, srcdir, dstdir, lmdbpaths, loglevel):
+    pipe.send('captured')
+    sys.exit(1)
+
+def _backupSleep(path, linkinfo, done):
+    time.sleep(3.0)
+
+async def _iterBackupEOF(path, linkinfo, done):
+    link = await s_link.fromspawn(linkinfo)
+    link.writer.write_eof()
+    await link.fini()
+    await s_coro.executor(done.put, True)
+
+def _backupEOF(path, linkinfo, done):
+    asyncio.run(_iterBackupEOF(path, linkinfo, done))
 
 class EchoAuthApi(s_cell.CellApi):
 
@@ -33,6 +64,11 @@ class EchoAuth(s_cell.Cell):
         if doraise:
             raise s_exc.BadTime(mesg='call again later')
 
+async def altAuthCtor(cell):
+    authconf = cell.conf.get('auth:conf')
+    assert authconf['foo'] == 'bar'
+    authconf['baz'] = 'faz'
+    return await s_cell.Cell._initCellHiveAuth(cell)
 
 class CellTest(s_t_utils.SynTest):
 
@@ -141,6 +177,26 @@ class CellTest(s_t_utils.SynTest):
                     with self.raises(s_exc.NoSuchUser):
                         await proxy.setUserPasswd('newp', 'new[')
 
+                # setRoles() allows arbitrary role ordering
+                extra_role = await echo.auth.addRole('extrarole')
+                await visi.setRoles((extra_role.iden, testrole.iden, echo.auth.allrole.iden))
+                visi_url = f'tcp://visi:foobar@127.0.0.1:{port}/echo00'
+                async with await s_telepath.openurl(visi_url) as proxy:  # type: EchoAuthApi
+                    uatm = await proxy.getUserInfo('visi')
+                    self.eq(uatm.get('roles'), ('extrarole', 'testrole', 'all',))
+
+                    # setRoles are wholesale replacements
+                    await visi.setRoles((echo.auth.allrole.iden, testrole.iden))
+                    uatm = await proxy.getUserInfo('visi')
+                    self.eq(uatm.get('roles'), ('all', 'testrole'))
+
+                # coverage test - nops short circuit
+                await visi.setRoles((echo.auth.allrole.iden, testrole.iden))
+
+                # grants must have the allrole in place
+                with self.raises(s_exc.BadArg):
+                    await visi.setRoles((extra_role.iden, testrole.iden))
+
                 # New password works
                 visi_url = f'tcp://visi:foobar@127.0.0.1:{port}/echo00'
                 async with await s_telepath.openurl(visi_url) as proxy:  # type: EchoAuthApi
@@ -218,6 +274,7 @@ class CellTest(s_t_utils.SynTest):
             async with core.getLocalProxy() as prox:
                 user = await prox.getCellUser()
                 self.eq('root', user.get('name'))
+                self.true(await prox.isCellActive())
 
         # Explicit use of the unix:// handler
         async with self.getTestCore() as core:
@@ -293,6 +350,10 @@ class CellTest(s_t_utils.SynTest):
                 await proxy.setUserProfInfo(visi.iden, 'hehe', 'haha')
                 self.eq('haha', await proxy.getUserProfInfo(visi.iden, 'hehe'))
                 self.eq('haha', (await proxy.getUserProfile(visi.iden))['hehe'])
+
+                iden = s_common.guid(('foo', 101))
+                udef = await proxy.addUser('foo', iden=iden)
+                self.eq(udef.get('iden'), iden)
 
     async def test_longpath(self):
         # This is similar to the DaemonTest::test_unixsock_longpath
@@ -392,8 +453,38 @@ class CellTest(s_t_utils.SynTest):
                 todo = s_common.todo('stream', doraise=True)
                 await self.agenraises(s_exc.BadTime, await prox.dyncall('self', todo))
 
-    async def test_cell_nexuschanges(self):
+    async def test_cell_promote(self):
+
         with self.getTestDir() as dirn:
+            async with await s_cell.Cell.anit(dirn) as cell:
+                async with cell.getLocalProxy() as proxy:
+                    with self.raises(s_exc.BadConfValu):
+                        await proxy.promote()
+
+    async def test_cell_anon(self):
+
+        with self.getTestDir() as dirn:
+            conf = {'auth:anon': 'anon'}
+            async with await s_cell.Cell.anit(dirn, conf=conf) as cell:
+                anon = await cell.auth.addUser('anon')
+                await cell.auth.rootuser.setPasswd('secret')
+                host, port = await cell.dmon.listen('tcp://127.0.0.1:0')
+                async with await s_telepath.openurl('tcp://127.0.0.1/', port=port) as prox:
+                    info = await prox.getCellUser()
+                    self.eq(anon.iden, info.get('iden'))
+
+                await anon.setLocked(True)
+                with self.raises(s_exc.AuthDeny):
+                    await s_telepath.openurl('tcp://127.0.0.1/', port=port)
+
+                await cell.auth.delUser(anon.iden)
+                with self.raises(s_exc.AuthDeny):
+                    await s_telepath.openurl('tcp://127.0.0.1/', port=port)
+
+    async def test_cell_nexuschanges(self):
+
+        with self.getTestDir() as dirn:
+
             dir0 = s_common.genpath(dirn, 'cell00')
             dir1 = s_common.genpath(dirn, 'cell01')
 
@@ -405,24 +496,30 @@ class CellTest(s_t_utils.SynTest):
                     nexsiden, act, args, kwargs, meta = data
                     if nexsiden == 'auth:auth' and act == 'user:add':
                         retn.append(args)
-                    if len(retn) >= 2:
                         break
                 return yielded, retn
 
-            conf = {'nexslog:en': True}
+            conf = {
+                'nexslog:en': True,
+                'nexslog:async': True,
+                'dmon:listen': 'tcp://127.0.0.1:0/',
+                'https:port': 0,
+            }
             async with await s_cell.Cell.anit(dir0, conf=conf) as cell00, \
                     cell00.getLocalProxy() as prox00:
 
+                self.true(cell00.nexsroot.map_async)
                 self.true(cell00.nexsroot.donexslog)
 
                 await prox00.addUser('test')
+                self.true(await prox00.getNexsIndx() > 0)
 
                 # We should have a set of auth:auth changes to find
                 task = cell00.schedCoro(coro(prox00, 0))
                 yielded, data = await asyncio.wait_for(task, 6)
                 self.true(yielded)
                 usernames = [args[1] for args in data]
-                self.eq(usernames, ['root', 'test'])
+                self.eq(usernames, ['test'])
 
             # Disable change logging for this cell.
             conf = {'nexslog:en': False}
@@ -487,3 +584,417 @@ class CellTest(s_t_utils.SynTest):
                 self.nn(slab['readonly'])
                 self.nn(slab['lockmemory'])
                 self.nn(slab['recovering'])
+
+    async def test_cell_hiveapi(self):
+
+        async with self.getTestCore() as core:
+
+            await core.setHiveKey(('foo', 'bar'), 10)
+            await core.setHiveKey(('foo', 'baz'), 30)
+
+            async with core.getLocalProxy() as proxy:
+                self.eq((), await proxy.getHiveKeys(('lulz',)))
+                self.eq((('bar', 10), ('baz', 30)), await proxy.getHiveKeys(('foo',)))
+
+    async def test_cell_confprint(self):
+
+        with self.withSetLoggingMock():
+
+            with self.getTestDir() as dirn:
+
+                conf = {
+                    'dmon:listen': 'tcp://127.0.0.1:0',
+                    'https:port': 0,
+                }
+                s_common.yamlsave(conf, dirn, 'cell.yaml')
+
+                outp = self.getTestOutp()
+                async with await s_cell.Cell.initFromArgv([dirn], outp=outp):
+                    outp.expect('...cell API (telepath): tcp://127.0.0.1:0')
+                    outp.expect('...cell API (https): 0')
+
+                conf = {
+                    'dmon:listen': 'tcp://127.0.0.1:0',
+                    'https:port': None,
+                }
+                s_common.yamlsave(conf, dirn, 'cell.yaml')
+
+                outp = self.getTestOutp()
+                async with await s_cell.Cell.initFromArgv([dirn], outp=outp):
+                    outp.expect('...cell API (telepath): tcp://127.0.0.1:0')
+                    outp.expect('...cell API (https): disabled')
+
+    async def test_cell_backup(self):
+
+        async with self.getTestCore() as core:
+            with self.raises(s_exc.NeedConfValu):
+                await core.runBackup()
+            with self.raises(s_exc.NeedConfValu):
+                await core.getBackups()
+            with self.raises(s_exc.NeedConfValu):
+                await core.delBackup('foo')
+
+        with self.getTestDir() as dirn:
+            s_common.yamlsave({'backup:dir': dirn}, dirn, 'cell.yaml')
+            with self.raises(s_exc.BadConfValu):
+                async with self.getTestCore(dirn=dirn) as core:
+                    pass
+
+        with self.getTestDir() as dirn:
+
+            backdirn = os.path.join(dirn, 'backups')
+            coredirn = os.path.join(dirn, 'cortex')
+
+            conf = {'backup:dir': backdirn}
+            s_common.yamlsave(conf, coredirn, 'cell.yaml')
+
+            async with self.getTestCore(dirn=coredirn) as core:
+
+                async with core.getLocalProxy() as proxy:
+
+                    with self.raises(s_exc.BadArg):
+                        await proxy.runBackup('../woot')
+
+                    with mock.patch.object(s_cell.Cell, 'BACKUP_SPAWN_TIMEOUT', 0.1):
+                        with mock.patch.object(s_cell.Cell, '_backupProc', staticmethod(_sleeperProc)):
+                            await self.asyncraises(s_exc.SynErr, proxy.runBackup())
+
+                    # Test runners can take an unusually long time to spawn a process
+                    with mock.patch.object(s_cell.Cell, 'BACKUP_SPAWN_TIMEOUT', 8.0):
+
+                        with mock.patch.object(s_cell.Cell, '_backupProc', staticmethod(_sleeper2Proc)):
+                            await self.asyncraises(s_exc.SynErr, proxy.runBackup())
+
+                        with mock.patch.object(s_cell.Cell, '_backupProc', staticmethod(_exiterProc)):
+                            await self.asyncraises(s_exc.SpawnExit, proxy.runBackup())
+
+                    name = await proxy.runBackup()
+                    self.eq((name,), await proxy.getBackups())
+                    await proxy.delBackup(name)
+                    self.eq((), await proxy.getBackups())
+                    name = await proxy.runBackup(name='foo/bar')
+
+                    with self.raises(s_exc.BadArg):
+                        await proxy.delBackup(name='foo')
+
+                    self.true(os.path.isdir(os.path.join(backdirn, 'foo', 'bar')))
+                    self.eq(('foo/bar',), await proxy.getBackups())
+
+                    with self.raises(s_exc.BadArg):
+                        await proxy.runBackup(name='foo/bar')
+
+    async def test_cell_tls_client(self):
+
+        with self.getTestDir() as dirn:
+
+            async with self.getTestCryo(dirn=dirn) as cryo:
+
+                cryo.certdir.genCaCert('localca')
+                cryo.certdir.genHostCert('localhost', signas='localca')
+                cryo.certdir.genUserCert('root@localhost', signas='localca')
+
+                root = await cryo.auth.addUser('root@localhost')
+                await root.setAdmin(True)
+
+            async with self.getTestCryo(dirn=dirn) as cryo:
+
+                addr, port = await cryo.dmon.listen('ssl://0.0.0.0:0?hostname=localhost&ca=localca')
+
+                async with await s_telepath.openurl(f'ssl://root@127.0.0.1:{port}?hostname=localhost') as proxy:
+                    self.nn(await proxy.getCellIden())
+
+                with self.raises(s_exc.BadCertHost):
+                    async with await s_telepath.openurl(f'ssl://root@127.0.0.1:{port}?hostname=borked.localhost') as proxy:
+                        pass
+
+    async def test_cell_auth_ctor(self):
+        conf = {
+            'auth:ctor': 'synapse.tests.test_lib_cell.altAuthCtor',
+            'auth:conf': {
+                'foo': 'bar',
+            },
+        }
+        with self.getTestDir() as dirn:
+            async with await s_cell.Cell.anit(dirn, conf=conf) as cell:
+                self.eq('faz', cell.conf.get('auth:conf')['baz'])
+                await cell.auth.addUser('visi')
+
+    async def test_cell_onepass(self):
+
+        with self.getTestDir() as dirn:
+
+            async with await s_cell.Cell.anit(dirn) as cell:
+
+                await cell.auth.rootuser.setPasswd('root')
+
+                visi = await cell.auth.addUser('visi')
+
+                thost, tport = await cell.dmon.listen('tcp://127.0.0.1:0')
+                hhost, hport = await cell.addHttpsPort(0, host='127.0.0.1')
+
+                async with self.getHttpSess(port=hport) as sess:
+                    resp = await sess.post(f'https://localhost:{hport}/api/v1/auth/onepass/issue')
+                    answ = await resp.json()
+                    self.eq('err', answ['status'])
+                    self.eq('NotAuthenticated', answ['code'])
+
+                async with self.getHttpSess(auth=('root', 'root'), port=hport) as sess:
+
+                    resp = await sess.post(f'https://localhost:{hport}/api/v1/auth/onepass/issue')
+                    answ = await resp.json()
+                    self.eq('err', answ['status'])
+                    self.eq('SchemaViolation', answ['code'])
+
+                    resp = await sess.post(f'https://localhost:{hport}/api/v1/auth/onepass/issue', json={'user': 'newp'})
+                    answ = await resp.json()
+                    self.eq('err', answ['status'])
+
+                    resp = await sess.post(f'https://localhost:{hport}/api/v1/auth/onepass/issue', json={'user': visi.iden})
+                    answ = await resp.json()
+                    self.eq('ok', answ['status'])
+
+                    onepass = answ['result']
+
+                async with await s_telepath.openurl(f'tcp://visi:{onepass}@127.0.0.1:{tport}') as proxy:
+                    await proxy.getCellIden()
+
+                with self.raises(s_exc.AuthDeny):
+                    async with await s_telepath.openurl(f'tcp://visi:{onepass}@127.0.0.1:{tport}') as proxy:
+                        pass
+
+                # purposely give a negative expire for test...
+                async with self.getHttpSess(auth=('root', 'root'), port=hport) as sess:
+                    resp = await sess.post(f'https://localhost:{hport}/api/v1/auth/onepass/issue', json={'user': visi.iden, 'duration': -1000})
+                    answ = await resp.json()
+                    self.eq('ok', answ['status'])
+                    onepass = answ['result']
+
+                with self.raises(s_exc.AuthDeny):
+                    async with await s_telepath.openurl(f'tcp://visi:{onepass}@127.0.0.1:{tport}') as proxy:
+                        pass
+
+    async def test_cell_activecoro(self):
+
+        evt0 = asyncio.Event()
+        evt1 = asyncio.Event()
+        evt2 = asyncio.Event()
+        evt3 = asyncio.Event()
+        evt4 = asyncio.Event()
+
+        async def coro():
+            try:
+                evt0.set()
+                await evt1.wait()
+                evt2.set()
+                await evt3.wait()
+
+            except asyncio.CancelledError:
+                evt4.set()
+                raise
+
+        with self.getTestDir() as dirn:
+
+            async with await s_cell.Cell.anit(dirn) as cell:
+
+                # Note: cell starts active, so coro should immediate run
+                cell.addActiveCoro(coro)
+
+                async def step():
+                    await asyncio.wait_for(evt0.wait(), timeout=2)
+
+                    # step him through...
+                    evt1.set()
+                    await asyncio.wait_for(evt2.wait(), timeout=2)
+
+                    evt0.clear()
+                    evt1.clear()
+                    evt3.set()
+
+                    await asyncio.wait_for(evt0.wait(), timeout=2)
+
+                await step()
+
+                self.none(await cell.delActiveCoro('notacoro'))
+
+                # Make sure a fini'd base takes its activecoros with it
+                async with await s_base.Base.anit() as base:
+                    cell.addActiveCoro(coro, base=base)
+                    self.len(2, cell.activecoros)
+
+                self.len(1, cell.activecoros)
+
+                self.raises(s_exc.IsFini, cell.addActiveCoro, coro, base=base)
+
+                # now deactivate and it gets cancelled
+                await cell.setCellActive(False)
+                await asyncio.wait_for(evt4.wait(), timeout=2)
+
+                evt0.clear()
+                evt1.clear()
+                evt2.clear()
+                evt3.clear()
+                evt4.clear()
+
+                # make him active post-init and confirm
+                await cell.setCellActive(True)
+                await step()
+
+                self.none(await cell.delActiveCoro(s_common.guid()))
+
+    async def test_cell_stream_backup(self):
+
+        with self.getTestDir() as dirn:
+
+            backdirn = os.path.join(dirn, 'backups')
+            coredirn = os.path.join(dirn, 'cortex')
+            bkuppath = os.path.join(dirn, 'bkup.tar.gz')
+            bkuppath2 = os.path.join(dirn, 'bkup2.tar.gz')
+            bkuppath3 = os.path.join(dirn, 'bkup3.tar.gz')
+            bkuppath4 = os.path.join(dirn, 'bkup4.tar.gz')
+            bkuppath5 = os.path.join(dirn, 'bkup5.tar.gz')
+
+            conf = {'backup:dir': backdirn}
+            s_common.yamlsave(conf, coredirn, 'cell.yaml')
+
+            async with self.getTestCore(dirn=coredirn) as core:
+
+                core.certdir.genCaCert('localca')
+                core.certdir.genHostCert('localhost', signas='localca')
+                core.certdir.genUserCert('root@localhost', signas='localca')
+
+                root = await core.auth.addUser('root@localhost')
+                await root.setAdmin(True)
+
+                nodes = await core.nodes('[test:str=streamed]')
+                self.len(1, nodes)
+
+                async with core.getLocalProxy() as proxy:
+
+                    with self.raises(s_exc.BadArg):
+                        async for msg in proxy.iterBackupArchive('nope'):
+                            pass
+
+                    await proxy.runBackup(name='bkup')
+
+                    with mock.patch('synapse.lib.cell._iterBackupProc', _backupSleep):
+                        arch = s_t_utils.alist(proxy.iterBackupArchive('bkup'))
+                        with self.raises(asyncio.TimeoutError):
+                            await asyncio.wait_for(arch, timeout=0.1)
+
+                        async def _fakeBackup(self, name=None, wait=True):
+                            s_common.gendir(os.path.join(backdirn, name))
+
+                        with mock.patch.object(s_cell.Cell, 'runBackup', _fakeBackup):
+                            arch = s_t_utils.alist(proxy.iterNewBackupArchive('nobkup', remove=True))
+                            with self.raises(asyncio.TimeoutError):
+                                await asyncio.wait_for(arch, timeout=0.1)
+
+                        async def _slowFakeBackup(self, name=None, wait=True):
+                            s_common.gendir(os.path.join(backdirn, name))
+                            await asyncio.sleep(3.0)
+
+                        with mock.patch.object(s_cell.Cell, 'runBackup', _slowFakeBackup):
+                            arch = s_t_utils.alist(proxy.iterNewBackupArchive('nobkup2', remove=True))
+                            with self.raises(asyncio.TimeoutError):
+                                await asyncio.wait_for(arch, timeout=0.1)
+
+                    with self.raises(s_exc.BadArg):
+                        async for msg in proxy.iterNewBackupArchive('bkup'):
+                            pass
+
+                    # Get an existing backup
+                    with open(bkuppath, 'wb') as bkup:
+                        async for msg in proxy.iterBackupArchive('bkup'):
+                            bkup.write(msg)
+
+                    # Create a new backup
+                    nodes = await core.nodes('[test:str=freshbkup]')
+                    self.len(1, nodes)
+
+                    with open(bkuppath2, 'wb') as bkup2:
+                        async for msg in proxy.iterNewBackupArchive('bkup2'):
+                            bkup2.write(msg)
+
+                    self.eq(('bkup', 'bkup2'), sorted(await proxy.getBackups()))
+                    self.true(os.path.isdir(os.path.join(backdirn, 'bkup2')))
+
+                    # Create a new backup and remove after
+                    nodes = await core.nodes('[test:str=lastbkup]')
+                    self.len(1, nodes)
+
+                    with open(bkuppath3, 'wb') as bkup3:
+                        async for msg in proxy.iterNewBackupArchive('bkup3', remove=True):
+                            bkup3.write(msg)
+
+                    self.eq(('bkup', 'bkup2'), sorted(await proxy.getBackups()))
+                    self.false(os.path.isdir(os.path.join(backdirn, 'bkup3')))
+
+                    # Create a new backup without a name param
+                    nodes = await core.nodes('[test:str=noname]')
+                    self.len(1, nodes)
+
+                    with open(bkuppath4, 'wb') as bkup4:
+                        async for msg in proxy.iterNewBackupArchive(remove=True):
+                            bkup4.write(msg)
+
+                    self.eq(('bkup', 'bkup2'), sorted(await proxy.getBackups()))
+
+            with tarfile.open(bkuppath, 'r:gz') as tar:
+                tar.extractall(path=dirn)
+
+            bkupdirn = os.path.join(dirn, 'bkup')
+            async with self.getTestCore(dirn=bkupdirn) as core:
+                nodes = await core.nodes('test:str=streamed')
+                self.len(1, nodes)
+
+                nodes = await core.nodes('test:str=freshbkup')
+                self.len(0, nodes)
+
+            with tarfile.open(bkuppath2, 'r:gz') as tar:
+                tar.extractall(path=dirn)
+
+            bkupdirn2 = os.path.join(dirn, 'bkup2')
+            async with self.getTestCore(dirn=bkupdirn2) as core:
+                nodes = await core.nodes('test:str=freshbkup')
+                self.len(1, nodes)
+
+            with tarfile.open(bkuppath3, 'r:gz') as tar:
+                tar.extractall(path=dirn)
+
+            bkupdirn3 = os.path.join(dirn, 'bkup3')
+            async with self.getTestCore(dirn=bkupdirn3) as core:
+                nodes = await core.nodes('test:str=lastbkup')
+                self.len(1, nodes)
+
+            with tarfile.open(bkuppath4, 'r:gz') as tar:
+                bkupname = os.path.commonprefix(tar.getnames())
+                tar.extractall(path=dirn)
+
+            bkupdirn4 = os.path.join(dirn, bkupname)
+            async with self.getTestCore(dirn=bkupdirn4) as core:
+                nodes = await core.nodes('test:str=noname')
+                self.len(1, nodes)
+
+            # Test backup over SSL
+            async with self.getTestCore(dirn=coredirn) as core:
+
+                nodes = await core.nodes('[test:str=ssl]')
+                addr, port = await core.dmon.listen('ssl://0.0.0.0:0?hostname=localhost&ca=localca')
+
+                async with await s_telepath.openurl(f'ssl://root@127.0.0.1:{port}?hostname=localhost') as proxy:
+                    with open(bkuppath5, 'wb') as bkup5:
+                        async for msg in proxy.iterNewBackupArchive(remove=True):
+                            bkup5.write(msg)
+
+                    with self.raises(s_exc.LinkShutDown):
+                        with mock.patch('synapse.lib.cell._iterBackupProc', _backupEOF):
+                            await s_t_utils.alist(proxy.iterNewBackupArchive('eof', remove=True))
+
+            with tarfile.open(bkuppath5, 'r:gz') as tar:
+                bkupname = os.path.commonprefix(tar.getnames())
+                tar.extractall(path=dirn)
+
+            bkupdirn5 = os.path.join(dirn, bkupname)
+            async with self.getTestCore(dirn=bkupdirn5) as core:
+                nodes = await core.nodes('test:str=ssl')
+                self.len(1, nodes)

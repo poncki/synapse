@@ -1,8 +1,12 @@
 import json
-import asyncio
+
 import aiohttp
+import aiohttp.client_exceptions as a_exc
+
+import synapse.cortex as s_cortex
 
 import synapse.lib.httpapi as s_httpapi
+import synapse.lib.version as s_version
 
 import synapse.tests.utils as s_tests
 
@@ -12,7 +16,7 @@ class HttpApiTest(s_tests.SynTest):
 
         class ReqAuthHandler(s_httpapi.Handler):
             async def get(self):
-                if not await self.reqAuthAllowed(('syn:test', )):
+                if not await self.allowed(('syn:test', )):
                     return
                 return self.sendRestRetn({'data': 'everything is awesome!'})
 
@@ -37,7 +41,7 @@ class HttpApiTest(s_tests.SynTest):
 
             async with self.getHttpSess(auth=('user', '12345'), port=port) as sess:
                 async with sess.get(url) as resp:
-                    self.eq(resp.status, 200)
+                    self.eq(resp.status, 403)
                     retn = await resp.json()
                     self.eq(retn.get('status'), 'err')
                     self.eq(retn.get('code'), 'AuthDeny')
@@ -575,6 +579,44 @@ class HttpApiTest(s_tests.SynTest):
                 podes = [m[1] for m in msgs if m[0] == 'node']
                 self.eq(podes[0][0], ('inet:ipv4', 0x05050505))
 
+    async def test_http_coreinfo(self):
+        async with self.getTestCore() as core:
+
+            visi = await core.auth.addUser('visi')
+
+            await visi.setAdmin(True)
+            await visi.setPasswd('secret')
+
+            host, port = await core.addHttpsPort(0, host='127.0.0.1')
+
+            async with self.getHttpSess() as sess:
+
+                async with sess.post(f'https://localhost:{port}/api/v1/login',
+                                     json={'user': 'visi', 'passwd': 'secret'}) as resp:
+                    retn = await resp.json()
+                    self.eq('ok', retn.get('status'))
+                    self.eq('visi', retn['result']['name'])
+
+                async with sess.get(f'https://localhost:{port}/api/v1/core/info') as resp:
+                    retn = await resp.json()
+                    self.eq('ok', retn.get('status'))
+                    coreinfo = retn.get('result')
+
+                self.eq(coreinfo.get('version'), s_version.version)
+
+                self.nn(coreinfo.get('modeldict'))
+
+                docs = coreinfo.get('stormdocs')
+                self.isin('types', docs)
+                self.isin('libraries', docs)
+
+            # Auth failures
+            conn = aiohttp.TCPConnector(ssl=False)
+            async with aiohttp.ClientSession(connector=conn) as sess:
+                async with sess.get(f'https://visi:newp@localhost:{port}/api/v1/core/info') as resp:
+                    retn = await resp.json()
+                    self.eq('err', retn.get('status'))
+
     async def test_http_model(self):
 
         async with self.getTestCore() as core:
@@ -697,10 +739,13 @@ class HttpApiTest(s_tests.SynTest):
 
             visi = await core.auth.addUser('visi')
 
-            await visi.setAdmin(True)
             await visi.setPasswd('secret')
 
             host, port = await core.addHttpsPort(0, host='127.0.0.1')
+
+            async with self.getHttpSess(port=port) as sess:
+                resp = await sess.post(f'https://localhost:{port}/api/v1/storm')
+                self.eq(401, resp.status)
 
             async with self.getHttpSess() as sess:
 
@@ -708,6 +753,16 @@ class HttpApiTest(s_tests.SynTest):
                     retn = await resp.json()
                     self.eq('ok', retn.get('status'))
                     self.eq('visi', retn['result']['name'])
+
+                body = {'query': 'inet:ipv4', 'opts': {'user': core.auth.rootuser.iden}}
+                async with sess.get(f'https://localhost:{port}/api/v1/storm', json=body) as resp:
+                    self.eq(resp.status, 403)
+
+                body = {'query': 'inet:ipv4', 'opts': {'user': core.auth.rootuser.iden}}
+                async with sess.get(f'https://localhost:{port}/api/v1/storm/nodes', json=body) as resp:
+                    self.eq(resp.status, 403)
+
+                await visi.setAdmin(True)
 
                 async with sess.get(f'https://localhost:{port}/api/v1/storm', data=b'asdf') as resp:
                     item = await resp.json()
@@ -770,12 +825,79 @@ class HttpApiTest(s_tests.SynTest):
 
                     self.eq(0x01020304, node[0][1])
 
+                # Task cancellation during long running storm queries works as intended
+                body = {'query': '.created | sleep 10'}
+                task = None
+                async with sess.get(f'https://localhost:{port}/api/v1/storm', json=body) as resp:
+
+                    async for byts, x in resp.content.iter_chunks():
+
+                        if not byts:
+                            break
+
+                        mesg = json.loads(byts)
+                        if mesg[0] == 'node':
+                            task = core.boss.tasks.get(list(core.boss.tasks.keys())[0])
+                            break
+
+                self.nn(task)
+                self.true(await task.waitfini(6))
+                self.len(0, core.boss.tasks)
+
+                task = None
+                async with sess.get(f'https://localhost:{port}/api/v1/storm/nodes', json=body) as resp:
+
+                    async for byts, x in resp.content.iter_chunks():
+
+                        if not byts:
+                            break
+
+                        mesg = json.loads(byts)
+                        self.len(2, mesg) # Is if roughly shaped like a node?
+                        task = core.boss.tasks.get(list(core.boss.tasks.keys())[0])
+                        break
+
+                self.nn(task)
+                self.true(await task.waitfini(6))
+                self.len(0, core.boss.tasks)
+
+                # check reqvalidstorm with various queries
+                tvs = (
+                    ('test:str=test', {}, 'ok'),
+                    ('1.2.3.4 | spin', {'mode': 'lookup'}, 'ok'),
+                    ('1.2.3.4 | spin', {'mode': 'autoadd'}, 'ok'),
+                    ('1.2.3.4', {}, 'err'),
+                    ('| 1.2.3.4 ', {'mode': 'lookup'}, 'err'),
+                    ('| 1.2.3.4', {'mode': 'autoadd'}, 'err'),
+                )
+                url = f'https://localhost:{port}/api/v1/reqvalidstorm'
+                for (query, opts, rcode) in tvs:
+                    body = {'query': query, 'opts': opts}
+                    async with sess.post(url, json=body) as resp:
+                        if resp.status == 200:
+                            data = await resp.json()
+                            self.eq(data.get('status'), rcode)
+                # Sad path
+                async with aiohttp.client.ClientSession() as bad_sess:
+                    async with bad_sess.post(url, ssl=False) as resp:
+                        data = await resp.json()
+                        self.eq(data.get('status'), 'err')
+                        self.eq(data.get('code'), 'NotAuthenticated')
+
     async def test_healthcheck(self):
         async with self.getTestCore() as core:
             # Run http instead of https for this test
             host, port = await core.addHttpsPort(0, host='127.0.0.1')
 
             root = await core.auth.getUserByName('root')
+
+            async with self.getHttpSess(auth=None, port=port) as sess:
+                url = f'https://localhost:{port}/api/v1/active'
+                async with sess.get(url) as resp:
+                    result = await resp.json()
+                    self.eq(result.get('status'), 'ok')
+                    self.true(result['result']['active'])
+
             await root.setPasswd('secret')
 
             url = f'https://localhost:{port}/api/v1/healthcheck'
@@ -797,3 +919,80 @@ class HttpApiTest(s_tests.SynTest):
                 async with sess.get(url) as resp:
                     result = await resp.json()
                     self.eq(result.get('status'), 'ok')
+
+    async def test_streamhandler(self):
+
+        class SadHandler(s_httpapi.StreamHandler):
+            '''
+            data_received must be implemented
+            '''
+            async def post(self):
+                self.sendRestRetn('foo')
+                return
+
+        async with self.getTestCore() as core:
+            core.addHttpApi('/api/v1/sad', SadHandler, {'cell': core})
+
+            host, port = await core.addHttpsPort(0, host='127.0.0.1')
+
+            root = await core.auth.getUserByName('root')
+            await root.setPasswd('secret')
+
+            url = f'https://localhost:{port}/api/v1/sad'
+            async with self.getHttpSess(auth=('root', 'secret'), port=port) as sess:
+                with self.raises(a_exc.ServerDisconnectedError):
+                    async with sess.post(url, data=b'foo') as resp:
+                        pass
+
+    async def test_http_storm_vars(self):
+
+        async with self.getTestCore() as core:
+
+            host, port = await core.addHttpsPort(0, host='127.0.0.1')
+
+            root = core.auth.rootuser
+            visi = await core.auth.addUser('visi')
+
+            await visi.setPasswd('secret')
+            await root.setPasswd('secret')
+
+            async with self.getHttpSess(auth=('root', 'secret'), port=port) as sess:
+
+                resp = await sess.post(f'https://localhost:{port}/api/v1/storm/vars/set')
+                self.eq('SchemaViolation', (await resp.json())['code'])
+
+                resp = await sess.get(f'https://localhost:{port}/api/v1/storm/vars/get')
+                self.eq('SchemaViolation', (await resp.json())['code'])
+
+                resp = await sess.post(f'https://localhost:{port}/api/v1/storm/vars/pop')
+                self.eq('SchemaViolation', (await resp.json())['code'])
+
+                body = {'name': 'hehe'}
+                resp = await sess.post(f'https://localhost:{port}/api/v1/storm/vars/set', json=body)
+                self.eq('BadArg', (await resp.json())['code'])
+
+                body = {'name': 'hehe', 'value': 'haha'}
+                resp = await sess.post(f'https://localhost:{port}/api/v1/storm/vars/set', json=body)
+                self.eq({'status': 'ok', 'result': True}, await resp.json())
+
+                body = {'name': 'hehe', 'default': 'lolz'}
+                resp = await sess.get(f'https://localhost:{port}/api/v1/storm/vars/get', json=body)
+                self.eq({'status': 'ok', 'result': 'haha'}, await resp.json())
+
+                body = {'name': 'hehe', 'default': 'lolz'}
+                resp = await sess.post(f'https://localhost:{port}/api/v1/storm/vars/pop', json=body)
+                self.eq({'status': 'ok', 'result': 'haha'}, await resp.json())
+
+            async with self.getHttpSess(auth=('visi', 'secret'), port=port) as sess:
+
+                body = {'name': 'hehe', 'value': 'haha'}
+                resp = await sess.post(f'https://localhost:{port}/api/v1/storm/vars/set', json=body)
+                self.eq('AuthDeny', (await resp.json())['code'])
+
+                body = {'name': 'hehe', 'default': 'lolz'}
+                resp = await sess.get(f'https://localhost:{port}/api/v1/storm/vars/get', json=body)
+                self.eq('AuthDeny', (await resp.json())['code'])
+
+                body = {'name': 'hehe', 'default': 'lolz'}
+                resp = await sess.post(f'https://localhost:{port}/api/v1/storm/vars/pop', json=body)
+                self.eq('AuthDeny', (await resp.json())['code'])

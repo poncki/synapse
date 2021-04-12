@@ -17,7 +17,6 @@ class Node:
 
     NOTE: This object is for local Cortex use during a single Xact.
     '''
-    # def __init__(self, snap, buid=None, rawprops=None, proplayr=None):
     def __init__(self, snap, sode, bylayer=None):
         self.snap = snap
         self.sode = sode
@@ -47,10 +46,30 @@ class Node:
         if self.nodedata is None:
             self.nodedata = {}
 
+    async def getStorNodes(self):
+        '''
+        Return a list of the raw storage nodes for each layer.
+        '''
+        return await self.snap.view.getStorNodes(self.buid)
+
+    def getByLayer(self):
+        '''
+        Return a dictionary that translates the node's bylayer dict to a primitive.
+        '''
+        ndef = self.bylayer.get('ndef')
+        tags = {t: l for (t, l) in self.bylayer.get('tags', {}).items()}
+        props = {p: l for (p, l) in self.bylayer.get('props', {}).items()}
+        tagprops = {p: l for (p, l) in self.bylayer.get('tagprops', {}).items()}
+        return {'ndef': ndef, 'props': props, 'tags': tags, 'tagprops': tagprops}
+
     def __repr__(self):
         return f'Node{{{self.pack()}}}'
 
     async def addEdge(self, verb, n2iden):
+        if self.form.isrunt:
+            mesg = f'Edges cannot be used with runt nodes: {self.form.full}'
+            raise s_exc.IsRuntForm(mesg=mesg, form=self.form.full)
+
         nodeedits = (
             (self.buid, self.form.name, (
                 (s_layer.EDIT_EDGE_ADD, (verb, n2iden), ()),
@@ -74,7 +93,7 @@ class Node:
         async for edge in self.snap.iterNodeEdgesN2(self.buid, verb=verb):
             yield edge
 
-    async def storm(self, text, opts=None, user=None, path=None):
+    async def storm(self, runt, text, opts=None, path=None):
         '''
         Args:
             path (Path):
@@ -86,31 +105,25 @@ class Node:
         '''
         query = self.snap.core.getStormQuery(text)
 
-        # Merge vars from path into opts.vars
-        pathvars = path.vars if path is not None else None
         if opts is None:
-            if pathvars is None:
-                newopts = None
-            else:
-                newopts = {'vars': pathvars}
-        else:
-            vars = opts.get('vars')
-            if pathvars is None:
-                newopts = opts
-            elif vars is None:
-                newopts = {**opts, **{'vars': pathvars}}
-            else:
-                newopts = {**opts, **{'vars': {**vars, **pathvars}}}
+            opts = {}
 
-        with self.snap.getStormRuntime(opts=newopts, user=user) as runt:
-            runt.addInput(self)
-            async for item in runt.iterStormQuery(query):
-                yield item
-            if path:
-                path.vars.update(runt.vars)
+        opts.setdefault('vars', {})
+        if path is not None:
+            opts['vars'].update(path.vars)
 
-    async def filter(self, text, opts=None, user=None, path=None):
-        async for item in self.storm(text, opts=opts, user=user, path=path):
+        async with runt.getSubRuntime(query, opts=opts) as subr:
+
+            subr.addInput(self)
+
+            async for subn, subp in subr.execute():
+                yield subn, subp
+
+            if path is not None:
+                path.vars.update(subr.vars)
+
+    async def filter(self, runt, text, opts=None, path=None):
+        async for item in self.storm(runt, text, opts=opts, path=path):
             return False
         return True
 
@@ -278,22 +291,14 @@ class Node:
             return self.tags.get(name[1:])
         return self.props.get(name)
 
-    async def pop(self, name, init=False):
-        '''
-        Remove a property from a node and return the value
-        '''
+    async def _getPropDelEdits(self, name, init=False):
+
         prop = self.form.prop(name)
         if prop is None:
             if self.snap.strict:
                 raise s_exc.NoSuchProp(name=name, form=self.form.name)
             await self.snap.warn(f'No Such Property: {name}')
-            return False
-
-        if self.form.isrunt:
-            if prop.info.get('ro'):
-                raise s_exc.IsRuntForm(mesg='Cannot delete read-only props on runt nodes',
-                                       form=self.form.full, prop=name)
-            return await self.snap.core.runRuntPropDel(self, prop)
+            return ()
 
         if not init:
 
@@ -301,17 +306,35 @@ class Node:
                 if self.snap.strict:
                     raise s_exc.ReadOnlyProp(name=name)
                 await self.snap.warn(f'Property is read-only: {name}')
-                return False
+                return ()
 
-        curv = self.props.pop(name, s_common.novalu)
+        curv = self.props.get(name, s_common.novalu)
         if curv is s_common.novalu:
-            return False
+            return ()
 
         edits = (
             (s_layer.EDIT_PROP_DEL, (prop.name, None, prop.type.stortype), ()),
         )
+        return edits
+
+    async def pop(self, name, init=False):
+        '''
+        Remove a property from a node and return the value
+        '''
+        if self.form.isrunt:
+            prop = self.form.prop(name)
+            if prop.info.get('ro'):
+                raise s_exc.IsRuntForm(mesg='Cannot delete read-only props on runt nodes',
+                                       form=self.form.full, prop=name)
+            return await self.snap.core.runRuntPropDel(self, prop)
+
+        edits = await self._getPropDelEdits(name, init=init)
+        if not edits:
+            return False
 
         await self.snap.applyNodeEdit((self.buid, self.form.name, edits))
+        self.props.pop(name, None)
+        return True
 
     def repr(self, name=None, defv=None):
 
@@ -417,6 +440,10 @@ class Node:
 
         name = '.'.join(path)
 
+        if not await self.snap.core.isTagValid(name):
+            mesg = f'The tag does not meet the regex for the tree.'
+            raise s_exc.BadTag(mesg=mesg)
+
         tagnode = await self.snap.addTagNode(name)
 
         # implement tag renames...
@@ -462,10 +489,31 @@ class Node:
 
         await self.snap.applyNodeEdit(nodeedit)
 
-    async def delTag(self, tag, init=False):
-        '''
-        Delete a tag from the node.
-        '''
+    def _getTagTree(self):
+
+        root = (None, {})
+        for tag in self.tags.keys():
+
+            node = root
+
+            for part in tag.split('.'):
+
+                kidn = node[1].get(part)
+
+                if kidn is None:
+
+                    full = part
+                    if node[0] is not None:
+                        full = f'{node[0]}.{full}'
+
+                    kidn = node[1][part] = (full, {})
+
+                node = kidn
+
+        return root
+
+    async def _getTagDelEdits(self, tag, init=False):
+
         path = s_chop.tagpath(tag)
 
         name = '.'.join(path)
@@ -476,17 +524,43 @@ class Node:
 
         curv = self.tags.get(name, s_common.novalu)
         if curv is s_common.novalu:
-            return False
+            return ()
 
         pref = name + '.'
 
-        subtags = [(len(t), t) for t in self.tags.keys() if t.startswith(pref)]
-        subtags.sort(reverse=True)
+        todel = [(len(t), t) for t in self.tags.keys() if t.startswith(pref)]
+
+        if len(path) > 1:
+
+            parent = '.'.join(path[:-1])
+
+            # retrieve a list of prunable tags
+            prune = await self.snap.core.getTagPrune(parent)
+            if prune:
+
+                tree = self._getTagTree()
+
+                for prunetag in reversed(prune):
+
+                    node = tree
+                    for step in prunetag.split('.'):
+
+                        node = node[1].get(step)
+                        if node is None:
+                            break
+
+                    if node is not None and len(node[1]) == 1:
+                        todel.append((len(node[0]), node[0]))
+                        continue
+
+                    break
+
+        todel.sort(reverse=True)
 
         # order matters...
         edits = []
 
-        for _, subtag in subtags:
+        for _, subtag in todel:
 
             edits.extend(self._getTagPropDel(subtag))
             edits.append((s_layer.EDIT_TAG_DEL, (subtag, None), ()))
@@ -494,8 +568,14 @@ class Node:
         edits.extend(self._getTagPropDel(name))
         edits.append((s_layer.EDIT_TAG_DEL, (name, None), ()))
 
-        nodeedit = (self.buid, self.form.name, edits)
+        return edits
 
+    async def delTag(self, tag, init=False):
+        '''
+        Delete a tag from the node.
+        '''
+        edits = await self._getTagDelEdits(tag, init=init)
+        nodeedit = (self.buid, self.form.name, edits)
         await self.snap.applyNodeEdit(nodeedit)
 
     def _getTagPropDel(self, tag):
@@ -604,7 +684,8 @@ class Node:
             raise s_exc.IsRuntForm(mesg='Cannot delete runt nodes',
                                    form=formname, valu=formvalu)
 
-        tags = [(len(t), t) for t in self.tags.keys()]
+        # top level tags will cause delete cascades
+        tags = [t for t in self.tags.keys() if len(t.split('.')) == 1]
 
         # check for any nodes which reference us...
         if not force:
@@ -614,7 +695,8 @@ class Node:
 
                 async for _ in self.snap.nodesByTag(self.ndef[1]):  # NOQA
                     mesg = 'Nodes still have this tag.'
-                    return await self.snap._raiseOnStrict(s_exc.CantDelNode, mesg, form=formname)
+                    return await self.snap._raiseOnStrict(s_exc.CantDelNode, mesg, form=formname,
+                                                          iden=self.iden())
 
             async for refr in self.snap.nodesByPropTypeValu(formname, formvalu):
 
@@ -622,22 +704,21 @@ class Node:
                     continue
 
                 mesg = 'Other nodes still refer to this node.'
-                return await self.snap._raiseOnStrict(s_exc.CantDelNode, mesg, form=formname)
+                return await self.snap._raiseOnStrict(s_exc.CantDelNode, mesg, form=formname,
+                                                      iden=self.iden())
 
-        # TODO put these into one edit...
+        edits = []
+        for tag in tags:
+            edits.extend(await self._getTagDelEdits(tag, init=True))
 
-        for _, tag in sorted(tags, reverse=True):
-            await self.delTag(tag, init=True)
+        for name in self.props.keys():
+            edits.extend(await self._getPropDelEdits(name, init=True))
 
-        for name in list(self.props.keys()):
-            await self.pop(name, init=True)
-
-        edits = (
+        edits.append(
             (s_layer.EDIT_NODE_DEL, (formvalu, self.form.type.stortype), ()),
         )
 
         await self.snap.applyNodeEdit((self.buid, formname, edits))
-
         self.snap.livenodes.pop(self.buid, None)
 
     async def getData(self, name):
@@ -670,13 +751,9 @@ class Path:
     '''
     A path context tracked through the storm runtime.
     '''
-    def __init__(self, runt, vars, nodes):
+    def __init__(self, vars, nodes):
 
         self.node = None
-        self.runt = runt
-        # we must "smell" like a runt for some AST ops
-        self.snap = runt.snap
-        self.model = runt.model
         self.nodes = nodes
 
         self.traces = []
@@ -723,10 +800,13 @@ class Path:
             self.vars[name] = valu
             return valu
 
-        return self.runt.getVar(name, defv=defv)
+        return s_common.novalu
 
     def setVar(self, name, valu):
         self.vars[name] = valu
+
+    def popVar(self, name):
+        return self.vars.pop(name, s_common.novalu)
 
     def meta(self, name, valu):
         '''
@@ -745,7 +825,7 @@ class Path:
         nodes = list(self.nodes)
         nodes.append(node)
 
-        path = Path(self.runt, dict(self.vars), nodes)
+        path = Path(self.vars.copy(), nodes)
         path.traces.extend(self.traces)
 
         [t.addFork(path) for t in self.traces]
@@ -753,36 +833,34 @@ class Path:
         return path
 
     def clone(self):
-        path = Path(self.runt,
-                    copy.copy(self.vars),
-                    copy.copy(self.nodes),)
+        path = Path(copy.copy(self.vars), copy.copy(self.nodes))
         path.traces = list(self.traces)
-        path.frames = [(copy.copy(vars), runt) for (vars, runt) in self.frames]
+        path.frames = [v.copy() for v in self.frames]
         return path
 
-    def initframe(self, initvars=None, initrunt=None):
+    def initframe(self, initvars=None):
 
         # full copy for now...
         framevars = self.vars.copy()
         if initvars is not None:
             framevars.update(initvars)
 
-        if initrunt is None:
-            initrunt = self.runt
+        self.frames.append(self.vars)
 
-        self.frames.append((self.vars, self.runt))
-
-        self.runt = initrunt
         self.vars = framevars
 
-    def finiframe(self, runt):
-
+    def finiframe(self):
+        '''
+        Pop a scope frame from the path, restoring runt if at the top
+        Args:
+            runt (Runtime): A storm runtime to restore if we're at the top
+            merge (bool): Set to true to merge vars back up into the next frame
+        '''
         if not self.frames:
             self.vars.clear()
-            self.runt = runt
             return
 
-        (self.vars, self.runt) = self.frames.pop()
+        self.vars = self.frames.pop()
 
 class Trace:
     '''

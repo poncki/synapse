@@ -2,6 +2,7 @@ import sys
 import asyncio
 import logging
 import warnings
+import contextlib
 
 import synapse.exc as s_exc
 import synapse.common as s_common
@@ -12,7 +13,7 @@ import synapse.lib.version as s_version
 
 logger = logging.getLogger(__name__)
 
-reqver = '>=0.2.0,<0.3.0'
+reqver = '>=0.2.0,<3.0.0'
 
 async def runcmdr(argv, item):  # pragma: no cover
     cmdr = await s_cmdr.getItemCmdr(item)
@@ -26,13 +27,9 @@ async def runcmdr(argv, item):  # pragma: no cover
 
     await cmdr.runCmdLoop()
 
-async def main(argv):  # pragma: no cover
-
-    if len(argv) not in (1, 2):
-        print('usage: python -m synapse.tools.cmdr <url> [<single quoted command>]')
-        return 1
-
-    s_common.setlogging(logger, 'WARNING')
+async def _main(argv):  # pragma: no cover
+    # Ensure that SYN_DIR is available
+    _ = s_common.getSynDir()
 
     async with await s_telepath.openurl(argv[0]) as item:
         try:
@@ -43,6 +40,24 @@ async def main(argv):  # pragma: no cover
             print(f'Please use a version of Synapse which supports {valu}; current version is {s_version.verstring}.')
             return 1
         await runcmdr(argv, item)
+
+async def main(argv):  # pragma: no cover
+
+    if len(argv) not in (1, 2):
+        print('usage: python -m synapse.tools.cmdr <url> [<single quoted command>]')
+        return 1
+
+    s_common.setlogging(logger, 'WARNING')
+
+    path = s_common.getSynPath('telepath.yaml')
+    async with contextlib.AsyncExitStack() as ctx:
+
+        telefini = await s_telepath.loadTeleEnv(path)
+        if telefini is not None:
+            ctx.push_async_callback(telefini)
+
+        await _main(argv)
+
     return 0
 
 if __name__ == '__main__': # pragma: no cover

@@ -136,7 +136,7 @@ class Cmd:
                     try:
                         valu, off = s_parser.parse_cmd_string(text, off)
                     except Exception:
-                        logger.exception('oh shit')
+                        logger.exception('CMD PARSRING ERROR')
                         print(80 * '*')
                         raise
                     if valu not in vals:

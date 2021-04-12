@@ -35,6 +35,14 @@ class VersionTest(s_t_utils.SynTest):
             ((0, 1, 51), '>=0.2.0,<0.3.0', s_exc.BadVersion),
             ((0, 2, 51), '>=0.2.0,<0.3.0', None),
             ((0, 2, 51), '>=0.2.0,<0.3.0,!=0.2.51', s_exc.BadVersion),
+
+            ((0, 1, 56), '>=0.2.0,<3.0.0', s_exc.BadVersion),
+            ((0, 2, 0), '>=0.2.0,<3.0.0', None),
+            ((2, 0, 0), '>=0.2.0,<3.0.0', None),
+            ((2, 0, 1), '>=2.0.0,<3.0.0', None),
+            ((2, 1, 0), '>=0.2.0,<3.0.0', None),
+            ((3, 0, 0), '>=2.0.0,<3.0.0', s_exc.BadVersion),
+
         ]
 
         for vec in tsts:
@@ -52,6 +60,9 @@ class VersionTest(s_t_utils.SynTest):
         self.isinstance(s_version.verstring, str)
         tver = tuple([int(p) for p in s_version.verstring.split('.')])
         self.eq(tver, s_version.version)
+
+        self.isinstance(s_version.commit, str)
+        self.true((s_version.commit == '') or (len(s_version.commit) == 40))
 
     def test_version_pack(self):
         ver = s_version.packVersion(0)

@@ -3,6 +3,8 @@ import logging
 import msgpack
 import msgpack.fallback as m_fallback
 
+import synapse.exc as s_exc
+
 logger = logging.getLogger(__name__)
 
 # Single Packer object which is reused for performance
@@ -15,6 +17,7 @@ if isinstance(pakr, m_fallback.Packer):  # pragma: no cover
 unpacker_kwargs = {
     'raw': False,
     'use_list': False,
+    'strict_map_key': False,
     'max_buffer_size': 2**32 - 1,
     'unicode_errors': 'surrogatepass'
 }
@@ -34,13 +37,44 @@ def en(item):
     Returns:
         bytes: The serialized bytes in msgpack format.
     '''
-    if pakr is None:  # pragma: no cover
-        return msgpack.packb(item, use_bin_type=True, unicode_errors='surrogatepass')
     try:
         return pakr.pack(item)
-    except Exception:
+    except TypeError as e:
         pakr.reset()
-        raise
+        mesg = f'{e.args[0]}: {repr(item)[:20]}'
+        raise s_exc.NotMsgpackSafe(mesg=mesg) from e
+    except Exception as e:
+        pakr.reset()
+        mesg = f'Cannot serialize: {repr(e)}:  {repr(item)[:20]}'
+        raise s_exc.NotMsgpackSafe(mesg=mesg) from e
+
+def _fallback_en(item):
+    '''
+    Use msgpack to serialize a compatible python object.
+
+    Args:
+        item (obj): The object to serialize
+
+    Notes:
+        String objects are encoded using utf8 encoding.  In order to handle
+        potentially malformed input, ``unicode_errors='surrogatepass'`` is set
+        to allow encoding bad input strings.
+
+    Returns:
+        bytes: The serialized bytes in msgpack format.
+    '''
+    try:
+        return msgpack.packb(item, use_bin_type=True, unicode_errors='surrogatepass')
+    except TypeError as e:
+        mesg = f'{e.args[0]}: {repr(item)[:20]}'
+        raise s_exc.NotMsgpackSafe(mesg=mesg) from e
+    except Exception as e:
+        mesg = f'Cannot serialize: {repr(e)}:  {repr(item)[:20]}'
+        raise s_exc.NotMsgpackSafe(mesg=mesg) from e
+
+# Redefine the en() function if we're in fallback mode.
+if pakr is None:  # pragma: no cover
+    en = _fallback_en
 
 def un(byts):
     '''
@@ -58,7 +92,7 @@ def un(byts):
         obj: The de-serialized object
     '''
     # This uses a subset of unpacker_kwargs
-    return msgpack.loads(byts, use_list=False, raw=False, unicode_errors='surrogatepass')
+    return msgpack.loads(byts, use_list=False, raw=False, strict_map_key=False, unicode_errors='surrogatepass')
 
 def isok(item):
     '''
@@ -188,3 +222,11 @@ def dumpfile(item, path):
     '''
     with io.open(path, 'wb') as fd:
         fd.write(en(item))
+
+def deepcopy(item):
+    '''
+    Copy a msgpack serializable by packing then unpacking it.
+    For complex primitives, this runs in about 1/3 the time of
+    copy.deepcopy()
+    '''
+    return un(en(item))

@@ -2,7 +2,7 @@
 This contains the core test helper code used in Synapse.
 
 This gives the opportunity for third-party users of Synapse to test their
-code using some of the same of the same helpers used to test Synapse.
+code using some of the same helpers used to test Synapse.
 
 The core class, synapse.tests.utils.SynTest is a subclass of unittest.TestCase,
 with several wrapper functions to allow for easier calls to assert* functions,
@@ -21,6 +21,7 @@ import io
 import os
 import sys
 import copy
+import math
 import types
 import shutil
 import asyncio
@@ -48,6 +49,7 @@ import synapse.daemon as s_daemon
 import synapse.cryotank as s_cryotank
 import synapse.telepath as s_telepath
 
+import synapse.lib.aha as s_aha
 import synapse.lib.coro as s_coro
 import synapse.lib.cmdr as s_cmdr
 import synapse.lib.hive as s_hive
@@ -59,8 +61,10 @@ import synapse.lib.storm as s_storm
 import synapse.lib.types as s_types
 import synapse.lib.module as s_module
 import synapse.lib.output as s_output
+import synapse.lib.certdir as s_certdir
+import synapse.lib.httpapi as s_httpapi
 import synapse.lib.msgpack as s_msgpack
-import synapse.lib.lmdbslab as s_slab
+import synapse.lib.lmdbslab as s_lmdbslab
 import synapse.lib.thishost as s_thishost
 import synapse.lib.stormtypes as s_stormtypes
 
@@ -72,7 +76,31 @@ TEST_MAP_SIZE = s_const.gibibyte
 async def alist(coro):
     return [x async for x in coro]
 
+def norm(z):
+    if isinstance(z, (list, tuple)):
+        return tuple([norm(n) for n in z])
+    if isinstance(z, dict):
+        return {norm(k): norm(v) for (k, v) in z.items()}
+    return z
+
 class LibTst(s_stormtypes.Lib):
+    '''
+    LibTst for testing!
+    '''
+    _storm_locals = (
+        {'name': 'beep',
+         'desc': '''
+        Example storm func.
+
+        Notes:
+            It beeps strings!''',
+         'type': {'type': 'function', '_funcname': 'beep',
+                  'args': (
+                      {'name': 'valu', 'type': 'str', 'desc': 'The value to beep.', },
+                  ),
+                  'returns': {'type': 'str', 'desc': 'The beeped string.', }}},
+    )
+    _storm_lib_path = ('test',)
 
     def addLibFuncs(self):
         self.locls.update({
@@ -165,13 +193,19 @@ testmodel = {
         ('test:auto', ('str', {}), {}),
         ('test:edge', ('edge', {}), {}),
         ('test:guid', ('guid', {}), {}),
+        ('test:data', ('data', {}), {}),
 
         ('test:arrayprop', ('guid', {}), {}),
+        ('test:arrayform', ('array', {'type': 'int'}), {}),
 
         ('test:comp', ('comp', {'fields': (
             ('hehe', 'test:int'),
             ('haha', 'test:lower'))
         }), {'doc': 'A fake comp type.'}),
+        ('test:compcomp', ('comp', {'fields': (
+            ('comp1', 'test:comp'),
+            ('comp2', 'test:comp'))
+        }), {}),
         ('test:complexcomp', ('comp', {'fields': (
             ('foo', 'test:int'),
             ('bar', ('str', {'lower': True}),),
@@ -200,10 +234,15 @@ testmodel = {
 
         ('test:arrayprop', {}, (
             ('ints', ('array', {'type': 'test:int'}), {}),
+            ('strs', ('array', {'type': 'test:str', 'split': ','}), {}),
+            ('strsnosplit', ('array', {'type': 'test:str'}), {}),
+        )),
+        ('test:arrayform', {}, (
         )),
         ('test:type10', {}, (
 
             ('intprop', ('int', {'min': 20, 'max': 30}), {}),
+            ('int2', ('int', {}), {}),
             ('strprop', ('str', {'lower': 1}), {}),
             ('guidprop', ('guid', {'lower': 1}), {}),
             ('locprop', ('loc', {}), {}),
@@ -220,17 +259,23 @@ testmodel = {
         ('test:type', {}, ()),
 
         ('test:comp', {}, (
-            ('hehe', ('test:int', {}), {'ro': 1}),
-            ('haha', ('test:lower', {}), {'ro': 1}),
+            ('hehe', ('test:int', {}), {'ro': True}),
+            ('haha', ('test:lower', {}), {'ro': True}),
+        )),
+
+        ('test:compcomp', {}, (
+            ('comp1', ('test:comp', {}), {}),
+            ('comp2', ('test:comp', {}), {}),
         )),
 
         ('test:complexcomp', {}, (
-            ('foo', ('test:int', {}), {'ro': 1}),
-            ('bar', ('str', {'lower': 1}), {'ro': 1})
+            ('foo', ('test:int', {}), {'ro': True}),
+            ('bar', ('str', {'lower': 1}), {'ro': True})
         )),
 
         ('test:int', {}, (
             ('loc', ('loc', {}), {}),
+            ('int2', ('int', {}), {}),
         )),
 
         ('test:float', {}, (
@@ -239,10 +284,10 @@ testmodel = {
         )),
 
         ('test:edge', {}, (
-            ('n1', ('ndef', {}), {'ro': 1}),
-            ('n1:form', ('str', {}), {'ro': 1}),
-            ('n2', ('ndef', {}), {'ro': 1}),
-            ('n2:form', ('str', {}), {'ro': 1}),
+            ('n1', ('ndef', {}), {'ro': True}),
+            ('n1:form', ('str', {}), {'ro': True}),
+            ('n2', ('ndef', {}), {'ro': True}),
+            ('n2:form', ('str', {}), {'ro': True}),
         )),
 
         ('test:guid', {}, (
@@ -250,6 +295,10 @@ testmodel = {
             ('tick', ('test:time', {}), {}),
             ('posneg', ('test:sub', {}), {}),
             ('posneg:isbig', ('bool', {}), {}),
+        )),
+
+        ('test:data', {}, (
+            ('data', ('test:data', {}), {}),
         )),
 
         ('test:str', {}, (
@@ -292,7 +341,7 @@ testmodel = {
         )),
 
         ('test:ndef', {}, (
-            ('form', ('str', {}), {'ro': 1}),
+            ('form', ('str', {}), {'ro': True}),
         )),
 
         ('test:runt', {'runt': True}, (
@@ -300,7 +349,26 @@ testmodel = {
             ('lulz', ('str', {}), {}),
             ('newp', ('str', {}), {'doc': 'A stray property we never use in nodes.'}),
         )),
+
     ),
+}
+
+deprmodel = {
+    'types': (
+        ('test:deprprop', ('test:str', {}), {'deprecated': True}),
+        ('test:deprarray', ('array', {'type': 'test:deprprop'}), {}),
+        ('test:deprform', ('test:str', {}), {}),
+        ('test:deprndef', ('ndef', {}), {}),
+    ),
+    'forms': (
+        ('test:deprprop', {}, ()),
+        ('test:deprform', {}, (
+            ('ndefprop', ('test:deprndef', {}), {}),
+            ('deprprop', ('test:deprarray', {}), {}),
+            ('okayprop', ('str', {}), {}),
+        )),
+    ),
+
 }
 
 class TestCmd(s_storm.Cmd):
@@ -309,6 +377,19 @@ class TestCmd(s_storm.Cmd):
     '''
 
     name = 'testcmd'
+    forms = {
+        'input': [
+            'test:str',
+            'inet:ipv6',
+        ],
+        'output': [
+            'inet:fqdn',
+        ],
+        'nodedata': [
+            ('foo', 'inet:ipv4'),
+            ('bar', 'inet:fqdn'),
+        ],
+    }
 
     def getArgParser(self):
         pars = s_storm.Cmd.getArgParser(self)
@@ -319,6 +400,13 @@ class TestCmd(s_storm.Cmd):
             await runt.printf(f'{self.name}: {node.ndef}')
             yield node, path
 
+class DeprModule(s_module.CoreModule):
+    def getModelDefs(self):
+        return (
+            ('depr', deprmodel),
+        )
+
+
 class TestModule(s_module.CoreModule):
     testguid = '8f1401de15918358d5247e21ca29a814'
 
@@ -327,7 +415,9 @@ class TestModule(s_module.CoreModule):
         self.core.setFeedFunc('com.test.record', self.addTestRecords)
 
         async with await self.core.snap() as snap:
-            await snap.addNode('meta:source', self.testguid, {'name': 'test'})
+            node = await snap.getNodeByNdef(('meta:source', self.testguid))
+            if node is None:
+                await snap.addNode('meta:source', self.testguid, {'name': 'test'})
 
         self.core.addStormLib(('test',), LibTst)
 
@@ -487,85 +577,6 @@ class TstOutPut(s_output.OutPutStr):
     def clear(self):
         self.mesgs.clear()
 
-class TestSteps:
-    '''
-    A class to assist with interlocking for multi-thread tests.
-
-    Args:
-        names (list): A list of names of tests steps as strings.
-    '''
-    def __init__(self, names):
-        self.steps = {}
-        self.names = names
-
-        for name in names:
-            self.steps[name] = threading.Event()
-
-    def done(self, step):
-        '''
-        Mark the step name as complete.
-
-        Args:
-            step (str): The step name to mark complete
-        '''
-        self.steps[step].set()
-
-    def wait(self, step, timeout=None):
-        '''
-        Wait (up to timeout seconds) for a step to complete.
-
-        Args:
-            step (str): The step name to wait for.
-            timeout (int): The timeout in seconds (or None)
-
-        Returns:
-            bool: True if the step is completed within the wait timeout.
-
-        Raises:
-            StepTimeout: on wait timeout
-        '''
-        if not self.steps[step].wait(timeout=timeout):
-            raise s_exc.StepTimeout(mesg='timeout waiting for step', step=step)
-        return True
-
-    def step(self, done, wait, timeout=None):
-        '''
-        Complete a step and wait for another.
-
-        Args:
-            done (str): The step name to complete.
-            wait (str): The step name to wait for.
-            timeout (int): The wait timeout.
-        '''
-        self.done(done)
-        return self.wait(wait, timeout=timeout)
-
-    def waitall(self, timeout=None):
-        '''
-        Wait for all the steps to be complete.
-
-        Args:
-            timeout (int): The wait timeout (per step).
-
-        Returns:
-            bool: True when all steps have completed within the alloted time.
-
-        Raises:
-            StepTimeout: When the first step fails to complete in the given time.
-        '''
-        for name in self.names:
-            self.wait(name, timeout=timeout)
-        return True
-
-    def clear(self, step):
-        '''
-        Clear the event for a given step.
-
-        Args:
-            step (str): The name of the step.
-        '''
-        self.steps[step].clear()
-
 class CmdGenerator:
 
     def __init__(self, cmds):
@@ -628,7 +639,7 @@ class AsyncStreamEvent(io.StringIO, asyncio.Event):
     '''
     def __init__(self, *args, **kwargs):
         io.StringIO.__init__(self, *args, **kwargs)
-        asyncio.Event.__init__(self, loop=asyncio.get_running_loop())
+        asyncio.Event.__init__(self)
         self.mesg = ''
 
     def setMesg(self, mesg):
@@ -654,6 +665,34 @@ class AsyncStreamEvent(io.StringIO, asyncio.Event):
             return await asyncio.Event.wait(self)
         return await s_coro.event_wait(self, timeout=timeout)
 
+class HttpReflector(s_httpapi.Handler):
+    '''Test handler which reflects get/post data back to the caller'''
+    async def get(self):
+        resp = {}
+        if self.request.arguments:
+            d = collections.defaultdict(list)
+            resp['params'] = d
+            for k, items in self.request.arguments.items():
+                for v in items:
+                    d[k].append(v.decode())
+        resp['headers'] = dict(self.request.headers)
+        resp['path'] = self.request.path
+        self.sendRestRetn(resp)
+
+    async def post(self):
+        resp = {}
+        if self.request.arguments:
+            d = collections.defaultdict(list)
+            resp['params'] = d
+            for k, items in self.request.arguments.items():
+                for v in items:
+                    d[k].append(v.decode())
+        resp['headers'] = dict(self.request.headers)
+        resp['path'] = self.request.path
+        if self.request.body:
+            resp['body'] = s_common.enbase64(self.request.body)
+        self.sendRestRetn(resp)
+
 s_task.vardefault('applynest', lambda: None)
 
 async def _doubleapply(self, indx, item):
@@ -669,11 +708,11 @@ async def _doubleapply(self, indx, item):
         nexsiden, event, args, kwargs, _ = item
 
         nexus = self._nexskids[nexsiden]
-        func, passoff = nexus._nexshands[event]
+        func, passitem = nexus._nexshands[event]
 
-        if passoff:
-            retn = await func(nexus, *args, nexsoff=indx, **kwargs)
-            await func(nexus, *args, nexsoff=indx, **kwargs)
+        if passitem:
+            retn = await func(nexus, *args, nexsitem=(indx, item), **kwargs)
+            await func(nexus, *args, nexsitem=(indx, item), **kwargs)
             return retn
 
         retn = await func(nexus, *args, **kwargs)
@@ -751,9 +790,9 @@ class SynTest(unittest.TestCase):
             yield regrdir
 
     @contextlib.asynccontextmanager
-    async def getRegrCore(self, vers):
+    async def getRegrCore(self, vers, conf=None):
         with self.getRegrDir('cortexes', vers) as dirn:
-            async with await s_cortex.Cortex.anit(dirn) as core:
+            async with await s_cortex.Cortex.anit(dirn, conf=conf) as core:
                 yield core
 
     def skipIfNoInternet(self):  # pragma: no cover
@@ -815,7 +854,7 @@ class SynTest(unittest.TestCase):
                 raise unittest.SkipTest('skip thishost: %s==%r' % (k, v))
 
     @contextlib.asynccontextmanager
-    async def getTestAxon(self, dirn=None):
+    async def getTestAxon(self, dirn=None, conf=None):
         '''
         Get a test Axon as an async context manager.
 
@@ -823,13 +862,13 @@ class SynTest(unittest.TestCase):
             s_axon.Axon: A Axon object.
         '''
         if dirn is not None:
-            async with await s_axon.Axon.anit(dirn) as axon:
+            async with await s_axon.Axon.anit(dirn, conf) as axon:
                 yield axon
 
             return
 
         with self.getTestDir() as dirn:
-            async with await s_axon.Axon.anit(dirn) as axon:
+            async with await s_axon.Axon.anit(dirn, conf) as axon:
                 yield axon
 
     @contextlib.contextmanager
@@ -1007,7 +1046,7 @@ class SynTest(unittest.TestCase):
             mods = []
             conf['modules'] = mods
 
-        mods.append(('synapse.tests.utils.TestModule', {'key': 'valu'}))
+        mods.insert(0, ('synapse.tests.utils.TestModule', {'key': 'valu'}))
 
         with self.withNexusReplay():
 
@@ -1036,7 +1075,7 @@ class SynTest(unittest.TestCase):
                 yield core, prox
 
     @contextlib.asynccontextmanager
-    async def getTestCryo(self, dirn=None):
+    async def getTestCryo(self, dirn=None, conf=None):
         '''
         Get a simple test Cryocell as an async context manager.
 
@@ -1044,13 +1083,13 @@ class SynTest(unittest.TestCase):
             s_cryotank.CryoCell: Test cryocell.
         '''
         if dirn is not None:
-            async with await s_cryotank.CryoCell.anit(dirn) as cryo:
+            async with await s_cryotank.CryoCell.anit(dirn, conf=conf) as cryo:
                 yield cryo
 
             return
 
         with self.getTestDir() as dirn:
-            async with await s_cryotank.CryoCell.anit(dirn) as cryo:
+            async with await s_cryotank.CryoCell.anit(dirn, conf=conf) as cryo:
                 yield cryo
 
     @contextlib.asynccontextmanager
@@ -1067,11 +1106,14 @@ class SynTest(unittest.TestCase):
 
     @contextlib.asynccontextmanager
     async def getTestDmon(self):
-        with self.getTestDir(mirror='certdir') as certdir:
+        with self.getTestDir(mirror='certdir') as certpath:
+            certdir = s_certdir.CertDir(path=certpath)
+            s_certdir.addCertPath(certpath)
             async with await s_daemon.Daemon.anit(certdir=certdir) as dmon:
                 await dmon.listen('tcp://127.0.0.1:0/')
                 with mock.patch('synapse.lib.certdir.defdir', certdir):
                     yield dmon
+            s_certdir.delCertPath(certpath)
 
     @contextlib.asynccontextmanager
     async def getTestCell(self, ctor, conf=None, dirn=None):
@@ -1112,6 +1154,16 @@ class SynTest(unittest.TestCase):
                 await self.addSvcToCore(testsvc, core)
 
                 yield core, prox, testsvc
+
+    @contextlib.asynccontextmanager
+    async def getTestAha(self, conf=None, dirn=None):
+        if dirn:
+            async with await s_aha.AhaCell.anit(dirn, conf=conf) as aha:
+                yield aha
+        else:
+            with self.getTestDir() as dirn:
+                async with await s_aha.AhaCell.anit(dirn, conf=conf) as aha:
+                    yield aha
 
     async def addSvcToCore(self, svc, core, svcname='svc'):
         '''
@@ -1402,9 +1454,12 @@ class SynTest(unittest.TestCase):
     async def execToolMain(self, func, argv):
         outp = self.getTestOutp()
 
-        def execmain():
-            return func(argv, outp=outp)
-        retn = await s_coro.executor(execmain)
+        if inspect.iscoroutinefunction(func):
+            retn = await func(argv, outp=outp)
+        else:
+            def execmain():
+                return func(argv, outp=outp)
+            retn = await s_coro.executor(execmain)
         return retn, outp
 
     @contextlib.contextmanager
@@ -1495,13 +1550,17 @@ class SynTest(unittest.TestCase):
         '''
         Assert X is equal to Y
         '''
-        if type(x) == list:
-            x = tuple(x)
+        self.assertEqual(norm(x), norm(y), msg=msg)
 
-        if type(y) == list:
-            y = tuple(y)
+    def eqOrNan(self, x, y, msg=None):
+        '''
+        Assert X is equal to Y or they are both NaN (needed since NaN != NaN)
+        '''
+        if math.isnan(x):
+            self.assertTrue(math.isnan(y), msg=msg)
+            return
 
-        self.assertEqual(x, y, msg=msg)
+        self.eq(x, y, msg=msg)
 
     def eqish(self, x, y, places=6, msg=None):
         '''
@@ -1513,7 +1572,7 @@ class SynTest(unittest.TestCase):
         '''
         Assert X is not equal to Y
         '''
-        self.assertNotEqual(x, y)
+        self.assertNotEqual(norm(x), norm(y))
 
     def true(self, x, msg=None):
         '''
@@ -1667,7 +1726,7 @@ class SynTest(unittest.TestCase):
 
         Args:
             obj (object): Object being inspected. This is validated to be a
-            tuple of length two, contiaing a str or None as the first value,
+            tuple of length two, containing a str or None as the first value,
             and a dict as the second value.
 
         Notes:
@@ -1735,10 +1794,13 @@ class SynTest(unittest.TestCase):
         import synapse.lib.const as s_const
         map_size = s_const.gibibyte
 
-        async with await s_slab.Slab.anit(dirn, map_size=map_size) as slab:
+        async with await s_lmdbslab.Slab.anit(dirn, map_size=map_size) as slab:
 
-            async with await s_hive.SlabHive.anit(slab) as hive:
+            nexsroot = await s_nexus.NexsRoot.anit(dirn)
+            await nexsroot.startup(None)
 
+            async with await s_hive.SlabHive.anit(slab, nexsroot=nexsroot) as hive:
+                hive.onfini(nexsroot.fini)
                 yield hive
 
     @contextlib.asynccontextmanager

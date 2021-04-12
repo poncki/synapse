@@ -183,6 +183,39 @@ class FileModule(s_module.CoreModule):
                     'ex': 'c:/windows/system32/calc.exe'}),
             ),
 
+            'interfaces': (
+                ('file:mime:meta', {
+                    'props': (
+                        ('file', ('file:bytes', {}), {
+                            'doc': 'The file that the mime info was parsed from.'}),
+                        ('file:offs', ('int', {}), {
+                            'doc': 'The optional offset where the mime info was parsed from.'}),
+                        ('file:data', ('data', {}), {
+                            'doc': 'A mime specific arbitrary data structure for non-indexed data.',
+                        }),
+                    ),
+                    'doc': 'Properties common to mime specific file metadata types.',
+                }),
+                ('file:mime:msoffice', {
+                    'props': (
+                        ('title', ('str', {}), {
+                            'doc': 'The title extracted from Microsoft Office metadata.'}),
+                        ('author', ('str', {}), {
+                            'doc': 'The author extracted from Microsoft Office metadata.'}),
+                        ('subject', ('str', {}), {
+                            'doc': 'The subject extracted from Microsoft Office metadata.'}),
+                        ('application', ('str', {}), {
+                            'doc': 'The creating_application extracted from Microsoft Office metadata.'}),
+                        ('created', ('time', {}), {
+                            'doc': 'The create_time extracted from Microsoft Office metadata.'}),
+                        ('lastsaved', ('time', {}), {
+                            'doc': 'The last_saved_time extracted from Microsoft Office metadata.'}),
+                    ),
+                    'doc': 'Properties common to various microsoft office file formats.',
+                    'interfaces': ('file:mime:meta',),
+                }),
+            ),
+
             'types': (
 
                 ('file:subfile', ('comp', {'fields': (('parent', 'file:bytes'), ('child', 'file:bytes'))}), {
@@ -194,12 +227,32 @@ class FileModule(s_module.CoreModule):
                 }),
 
                 ('file:mime', ('str', {'lower': 1}), {
-                    'doc': 'A file mime name string',
+                    'doc': 'A file mime name string.',
                     'ex': 'text/plain',
                 }),
 
                 ('file:ismime', ('comp', {'fields': (('file', 'file:bytes'), ('mime', 'file:mime'))}), {
                     'doc': 'Records one, of potentially multiple, mime types for a given file.',
+                }),
+
+                ('file:mime:msdoc', ('guid', {}), {
+                    'doc': 'The GUID of a set of mime metadata for a Microsoft Word file.',
+                    'interfaces': ('file:mime:msoffice',),
+                }),
+
+                ('file:mime:msxls', ('guid', {}), {
+                    'doc': 'The GUID of a set of mime metadata for a Microsoft Excel file.',
+                    'interfaces': ('file:mime:msoffice',),
+                }),
+
+                ('file:mime:msppt', ('guid', {}), {
+                    'doc': 'The GUID of a set of mime metadata for a Microsoft Powerpoint file.',
+                    'interfaces': ('file:mime:msoffice',),
+                }),
+
+                ('file:mime:rtf', ('guid', {}), {
+                    'doc': 'The GUID of a set of mime metadata for a .rtf file.',
+                    'interfaces': ('file:mime:meta',),
                 }),
 
                 ('file:mime:pe:section', ('comp', {'fields': (
@@ -234,15 +287,16 @@ class FileModule(s_module.CoreModule):
                 ('file:string', ('comp', {'fields': (
                         ('file', 'file:bytes'),
                         ('string', 'str'))}), {
-                    'doc': 'The fused knowledge of a file:bytes node containing a string.',
+                    'deprecated': True,
+                    'doc': 'Deprecated. Please use the edge -(refs)> it:dev:str.',
                 }),
 
                 ('pe:resource:type', ('int', {'enums': s_l_pe.getRsrcTypes()}), {
-                    'doc': 'The typecode for the resource',
+                    'doc': 'The typecode for the resource.',
                 }),
 
                 ('pe:langid', ('int', {'enums': s_l_pe.getLangCodes()}), {
-                    'doc': 'The PE language id',
+                    'doc': 'The PE language id.',
                 }),
 
             ),
@@ -254,16 +308,16 @@ class FileModule(s_module.CoreModule):
                     ('size', ('int', {}), {
                         'doc': 'The file size in bytes.'}),
 
-                    ('md5', ('hash:md5', {}), {'ro': 1,
+                    ('md5', ('hash:md5', {}), {'ro': True,
                                                'doc': 'The md5 hash of the file.'}),
 
-                    ('sha1', ('hash:sha1', {}), {'ro': 1,
+                    ('sha1', ('hash:sha1', {}), {'ro': True,
                                                  'doc': 'The sha1 hash of the file.'}),
 
-                    ('sha256', ('hash:sha256', {}), {'ro': 1,
+                    ('sha256', ('hash:sha256', {}), {'ro': True,
                                                      'doc': 'The sha256 hash of the file.'}),
 
-                    ('sha512', ('hash:sha512', {}), {'ro': 1,
+                    ('sha512', ('hash:sha512', {}), {'ro': True,
                                                      'doc': 'The sha512 hash of the file.'}),
 
                     ('name', ('file:base', {}), {
@@ -280,19 +334,19 @@ class FileModule(s_module.CoreModule):
 
                     ('mime:pe:imphash', ('guid', {}), {
                         'doc': 'The PE import hash of the file as calculated by pefile; '
-                               'https://github.com/erocarrera/pefile'}),
+                               'https://github.com/erocarrera/pefile .'}),
 
                     ('mime:pe:compiled', ('time', {}), {
                         'doc': 'The compile time of the file according to the PE header.'}),
 
                     ('mime:pe:pdbpath', ('file:path', {}), {
-                        'doc': 'The PDB string according to the PE'}),
+                        'doc': 'The PDB string according to the PE.'}),
 
                     ('mime:pe:exports:time', ('time', {}), {
-                        'doc': 'The export time of the file according to the PE'}),
+                        'doc': 'The export time of the file according to the PE.'}),
 
                     ('mime:pe:exports:libname', ('str', {}), {
-                        'doc': 'The export library name according to the PE'}),
+                        'doc': 'The export library name according to the PE.'}),
 
                     ('mime:pe:richhdr', ('hash:sha256', {}), {
                         'doc': 'The sha256 hash of the rich header bytes.'}),
@@ -310,6 +364,15 @@ class FileModule(s_module.CoreModule):
                         'ro': True,
                         'doc': 'The mime type of the file.',
                     }),
+                )),
+
+                ('file:mime:msdoc', {}, ()),
+                ('file:mime:msxls', {}, ()),
+                ('file:mime:msppt', {}, ()),
+
+                ('file:mime:rtf', {}, (
+                    ('guid', ('guid', {}), {
+                        'doc': 'The parsed GUID embedded in the .rtf file.'}),
                 )),
 
                 ('file:mime:pe:section', {}, (
@@ -330,48 +393,48 @@ class FileModule(s_module.CoreModule):
                 ('file:mime:pe:resource', {}, (
                     ('file', ('file:bytes', {}), {
                         'ro': True,
-                        'doc': 'The file containing the resource',
+                        'doc': 'The file containing the resource.',
                     }),
                     ('type', ('pe:resource:type', {}), {
                         'ro': True,
-                        'doc': 'The typecode for the resource',
+                        'doc': 'The typecode for the resource.',
                     }),
                     ('langid', ('pe:langid', {}), {
                         'ro': True,
-                        'doc': 'The language code for the resource',
+                        'doc': 'The language code for the resource.',
                     }),
                     ('resource', ('file:bytes', {}), {
                         'ro': True,
-                        'doc': 'The sha256 hash of the resource bytes',
+                        'doc': 'The sha256 hash of the resource bytes.',
                     }),
                 )),
 
                 ('file:mime:pe:export', {}, (
                     ('file', ('file:bytes', {}), {
                         'ro': True,
-                        'doc': 'The file containing the export',
+                        'doc': 'The file containing the export.',
                     }),
                     ('name', ('str', {}), {
                         'ro': True,
-                        'doc': 'The name of the export in the file',
+                        'doc': 'The name of the export in the file.',
                     }),
                 )),
 
                 ('file:mime:pe:vsvers:keyval', {}, (
                     ('name', ('str', {}), {
                         'ro': True,
-                        'doc': 'The key for the vsversion keyval pair',
+                        'doc': 'The key for the vsversion keyval pair.',
                     }),
                     ('value', ('str', {}), {
                         'ro': True,
-                        'doc': 'The value for the vsversion keyval pair',
+                        'doc': 'The value for the vsversion keyval pair.',
                     }),
                 )),
 
                 ('file:mime:pe:vsvers:info', {}, (
                     ('file', ('file:bytes', {}), {
                         'ro': True,
-                        'doc': 'The file containing the vsversion keyval pair',
+                        'doc': 'The file containing the vsversion keyval pair.',
                     }),
                     ('keyval', ('file:mime:pe:vsvers:keyval', {}), {
                         'ro': True,
@@ -382,7 +445,7 @@ class FileModule(s_module.CoreModule):
                 ('file:string', {}, (
                     ('file', ('file:bytes', {}), {
                         'ro': True,
-                        'doc': 'The file containing the string',
+                        'doc': 'The file containing the string.',
                     }),
                     ('string', ('str', {}), {
                         'ro': True,
@@ -391,7 +454,7 @@ class FileModule(s_module.CoreModule):
                 )),
 
                 ('file:base', {}, (
-                    ('ext', ('str', {}), {'ro': 1,
+                    ('ext', ('str', {}), {'ro': True,
                         'doc': 'The file extension (if any).'}),
                 )),
 
@@ -428,20 +491,22 @@ class FileModule(s_module.CoreModule):
                         'doc': 'The child file contained in the parent file.',
                     }),
                     ('name', ('file:base', {}), {
-                        'doc': 'The name of the child file. Because a given set of bytes '
-                               'can have any number of arbitrary names, this field is '
-                               'used for display purposes only.'
-                    })
+                        'deprecated': True,
+                        'doc': 'Deprecated, please use the :path property.',
+                    }),
+                    ('path', ('file:path', {}), {
+                        'doc': 'The path that the parent uses to refer to the child file.',
+                    }),
                 )),
 
                 ('file:path', {}, (
-                    ('dir', ('file:path', {}), {'ro': 1,
+                    ('dir', ('file:path', {}), {'ro': True,
                         'doc': 'The parent directory.'}),
 
-                    ('base', ('file:base', {}), {'ro': 1,
+                    ('base', ('file:base', {}), {'ro': True,
                         'doc': 'The file base name.'}),
 
-                    ('base:ext', ('str', {}), {'ro': 1,
+                    ('base:ext', ('str', {}), {'ro': True,
                         'doc': 'The file extension.'}),
                 )),
             ),
