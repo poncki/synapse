@@ -213,6 +213,7 @@ class Node:
         Returns:
             (bool): True if the property was changed.
         '''
+        print(f'{self.ndef=} {name=} {valu=}')
         if self.snap.readonly:
             mesg = 'Cannot set property in read-only mode.'
             raise s_exc.IsReadOnly(mesg=mesg)

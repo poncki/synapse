@@ -522,7 +522,7 @@ class Snap(s_base.Base):
     async def getNodeAdds(self, form, valu, props, addnode=True):
 
         async def _getadds(f, p, formnorm, forminfo, doaddnode=True):
-
+            print(f'{f.name=} {p=} {formnorm=}')
             if f.locked:
                 mesg = f'Form {f.full} is locked due to deprecation.'
                 raise s_exc.IsDeprLocked(mesg=mesg)
@@ -535,6 +535,7 @@ class Snap(s_base.Base):
                 p[subname] = subvalu
 
             for propname, propvalu in p.items():
+                print(f'{propname=} {propvalu=}')
                 subedits: s_layer.NodeEditsT = []
 
                 prop = f.prop(propname)
@@ -600,8 +601,9 @@ class Snap(s_base.Base):
                         fullname = f'{prop.full}:{subname}'
                         subprop = self.core.model.prop(fullname)
                         if subprop is None:
+                            print(f'Skipping subprop = {fullname=}')
                             continue
-
+                        print(f'Making subprop {fullname=}')
                         assert subprop.type.stortype is not None
 
                         subnorm, subinfo = subprop.type.norm(subvalu)
