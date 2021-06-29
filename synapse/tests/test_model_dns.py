@@ -60,102 +60,118 @@ class DnsModelTest(s_t_utils.SynTest):
             async with await core.snap() as snap:
 
                 props = {
-                    'time': '2018',
                     'query': ('1.2.3.4', 'vertex.link', 255),
-                    'server': 'udp://5.6.7.8:53',
-                    'reply:code': 0,
                 }
-
                 node = await snap.addNode('inet:dns:request', '*', props)
                 req_ndef = node.ndef
-                self.eq(node.get('time'), 1514764800000)
-                self.eq(node.get('reply:code'), 0)
-                self.eq(node.get('server'), 'udp://5.6.7.8:53')
                 self.eq(node.get('query'), ('tcp://1.2.3.4', 'vertex.link', 255))
                 self.eq(node.get('query:name'), 'vertex.link')
                 self.eq(node.get('query:name:fqdn'), 'vertex.link')
                 self.eq(node.get('query:type'), 255)
-                self.none(node.get('query:client'))
-                self.nn(await snap.getNodeByNdef(('inet:server', 'udp://5.6.7.8:53')))
+                print(node.pack())
+            layr = list(core.layers.keys())[0]
+            from pprint import pprint
+            async for offset, edits in core.syncLayerNodeEdits(layr, 0, wait=False):
+                print(f'edit {offset} has {len(edits)} in it')
+                for edit in edits:
+                    pprint(edit, width=120)
 
-                # Ensure some remaining inet:dns:query:name:* props are broken out
-                node = await snap.addNode('inet:dns:request', '*', {'query:name': '4.3.2.1.in-addr.arpa'})
-                self.none(node.get('query:name:fqdn'))
-                self.eq(node.get('query:name:ipv4'), 0x01020304)
-                self.eq(node.get('query:name'), '4.3.2.1.in-addr.arpa')
+        print('========================')
+        async with self.getTestCore() as core:
+            pode = (('inet:dns:request', 'ceeeb6a6629f3e5a2ff5a4b7602c2a4b'), {'iden': 'ac46edad411733487ec13bf8c1af793f1c870ff8c9a0ea8bca07b1e77d83ee59', 'tags': {}, 'props': {'.created': 1624997681161, 'query:name': 'vertex.link', 'query:name:fqdn': 'vertex.link', 'query:type': 255, 'query': ('tcp://1.2.3.4', 'vertex.link', 255)}, 'tagprops': {}, 'nodedata': {}})
+            podes = [pode]
 
-                # A bit of a bunk example but sometimes people query for raw ipv4/ipv6 addresses
-                # and we'll try to extract them if possible :)
-                node = await snap.addNode('inet:dns:request', '*', {'query:name': '::ffff:1.2.3.4'})
-                self.none(node.get('query:name:fqdn'))
-                self.eq(node.get('query:name'), '::ffff:1.2.3.4')
-                self.eq(node.get('query:name:ipv4'), 0x01020304)
-                self.eq(node.get('query:name:ipv6'), '::ffff:1.2.3.4')
+            feed = 'syn.nodes'
 
-                # Ensure that lift via prefix for inet:dns:name type works
-                nodes = await snap.nodes('inet:dns:request:query:name^=vertex')
-                self.len(1, nodes)
+            resp = await core.addFeedData(feed, podes)
+            self.len(1, await core.nodes('inet:dns:request'))
 
-                # Ensure that subs are broken out for inet:dns:query
-                node = await snap.getNodeByNdef(('inet:dns:query', ('tcp://1.2.3.4', 'vertex.link', 255)))
-                self.eq(node.get('client'), 'tcp://1.2.3.4')
-                self.eq(node.get('name'), 'vertex.link')
-                self.eq(node.get('name:fqdn'), 'vertex.link')
-                self.eq(node.get('type'), 255)
+            layr = list(core.layers.keys())[0]
+            from pprint import pprint
+            async for offset, edits in core.syncLayerNodeEdits(layr, 0, wait=False):
+                print(f'edit {offset} has {len(edits)} in it')
+                for edit in edits:
+                    pprint(edit, width=120)
 
-                node = await snap.addNode('inet:dns:query', ('tcp://1.2.3.4', '4.3.2.1.in-addr.arpa', 255))
-                self.eq(node.get('name'), '4.3.2.1.in-addr.arpa')
-                self.none(node.get('name:fqdn'))
-                self.eq(node.get('name:ipv4'), 0x01020304)
-                self.none(node.get('name:ipv6'))
-                valu = ('tcp://1.2.3.4',
-                        '4.0.3.0.2.0.1.0.f.f.f.f.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.ip6.arpa',
-                        255)
-                node = await snap.addNode('inet:dns:query', valu)
-                self.none(node.get('name:fqdn'))
-                self.eq(node.get('name:ipv4'), 0x01020304)
-                self.eq(node.get('name:ipv6'), '::ffff:1.2.3.4')
 
-                # Try inet:dns:answer now
-                props = {
-                    'request': req_ndef[1],
-                    'a': ('vertex.link', '2.3.4.5'),
-                }
-
-                await snap.addNode('inet:dns:answer', '*', props)
-                self.nn(await snap.getNodeByNdef(('inet:dns:a', ('vertex.link', 0x02030405))))
-
-                # It is also possible for us to record a request from imperfect data
-                # An example of that is dns data from a malware sandbox where the client
-                # IP is unknown
-                props = {
-                    'time': '2018',
-                    'exe': f'guid:{"a" * 32}',
-                    'query:name': 'notac2.someone.com'
-                }
-                node = await snap.addNode('inet:dns:request', '*', props)
-                self.none(node.get('query'))
-                self.eq(node.get('exe'), f'guid:{"a" * 32}')
-                self.eq(node.get('query:name'), 'notac2.someone.com')
-
-            # DNS queries can be quite complex or awkward since the protocol
-            # allows for nearly anything to be asked about. This can lead to
-            # pivots with non-normable data.
-            q = '[inet:dns:query=(tcp://1.2.3.4, "", 1)]'
-            await self.agenlen(1, core.eval(q))
-            q = '[inet:dns:query=(tcp://1.2.3.4, "foo*.haha.com", 1)]'
-            await self.agenlen(1, core.eval(q))
-            q = 'inet:dns:query=(tcp://1.2.3.4, "", 1) :name -> inet:fqdn'
-            with self.getLoggerStream('synapse.lib.ast',
-                                      'Cannot generate fqdn index bytes for a empty string') as stream:
-                await self.agenlen(0, core.eval(q))
-                self.true(stream.wait(1))
-
-            q = 'inet:dns:query=(tcp://1.2.3.4, "foo*.haha.com", 1) :name -> inet:fqdn'
-            with self.getLoggerStream('synapse.lib.ast',
-                                      'Wild card may only appear at the beginning') as stream:
-                await self.agenlen(0, core.eval(q))
-                self.true(stream.wait(1))
+            #     # Ensure some remaining inet:dns:query:name:* props are broken out
+            #     node = await snap.addNode('inet:dns:request', '*', {'query:name': '4.3.2.1.in-addr.arpa'})
+            #     self.none(node.get('query:name:fqdn'))
+            #     self.eq(node.get('query:name:ipv4'), 0x01020304)
+            #     self.eq(node.get('query:name'), '4.3.2.1.in-addr.arpa')
+            #
+            #     # A bit of a bunk example but sometimes people query for raw ipv4/ipv6 addresses
+            #     # and we'll try to extract them if possible :)
+            #     node = await snap.addNode('inet:dns:request', '*', {'query:name': '::ffff:1.2.3.4'})
+            #     self.none(node.get('query:name:fqdn'))
+            #     self.eq(node.get('query:name'), '::ffff:1.2.3.4')
+            #     self.eq(node.get('query:name:ipv4'), 0x01020304)
+            #     self.eq(node.get('query:name:ipv6'), '::ffff:1.2.3.4')
+            #
+            #     # Ensure that lift via prefix for inet:dns:name type works
+            #     nodes = await snap.nodes('inet:dns:request:query:name^=vertex')
+            #     self.len(1, nodes)
+            #
+            #     # Ensure that subs are broken out for inet:dns:query
+            #     node = await snap.getNodeByNdef(('inet:dns:query', ('tcp://1.2.3.4', 'vertex.link', 255)))
+            #     self.eq(node.get('client'), 'tcp://1.2.3.4')
+            #     self.eq(node.get('name'), 'vertex.link')
+            #     self.eq(node.get('name:fqdn'), 'vertex.link')
+            #     self.eq(node.get('type'), 255)
+            #
+            #     node = await snap.addNode('inet:dns:query', ('tcp://1.2.3.4', '4.3.2.1.in-addr.arpa', 255))
+            #     self.eq(node.get('name'), '4.3.2.1.in-addr.arpa')
+            #     self.none(node.get('name:fqdn'))
+            #     self.eq(node.get('name:ipv4'), 0x01020304)
+            #     self.none(node.get('name:ipv6'))
+            #     valu = ('tcp://1.2.3.4',
+            #             '4.0.3.0.2.0.1.0.f.f.f.f.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.ip6.arpa',
+            #             255)
+            #     node = await snap.addNode('inet:dns:query', valu)
+            #     self.none(node.get('name:fqdn'))
+            #     self.eq(node.get('name:ipv4'), 0x01020304)
+            #     self.eq(node.get('name:ipv6'), '::ffff:1.2.3.4')
+            #
+            #     # Try inet:dns:answer now
+            #     props = {
+            #         'request': req_ndef[1],
+            #         'a': ('vertex.link', '2.3.4.5'),
+            #     }
+            #
+            #     await snap.addNode('inet:dns:answer', '*', props)
+            #     self.nn(await snap.getNodeByNdef(('inet:dns:a', ('vertex.link', 0x02030405))))
+            #
+            #     # It is also possible for us to record a request from imperfect data
+            #     # An example of that is dns data from a malware sandbox where the client
+            #     # IP is unknown
+            #     props = {
+            #         'time': '2018',
+            #         'exe': f'guid:{"a" * 32}',
+            #         'query:name': 'notac2.someone.com'
+            #     }
+            #     node = await snap.addNode('inet:dns:request', '*', props)
+            #     self.none(node.get('query'))
+            #     self.eq(node.get('exe'), f'guid:{"a" * 32}')
+            #     self.eq(node.get('query:name'), 'notac2.someone.com')
+            #
+            # # DNS queries can be quite complex or awkward since the protocol
+            # # allows for nearly anything to be asked about. This can lead to
+            # # pivots with non-normable data.
+            # q = '[inet:dns:query=(tcp://1.2.3.4, "", 1)]'
+            # await self.agenlen(1, core.eval(q))
+            # q = '[inet:dns:query=(tcp://1.2.3.4, "foo*.haha.com", 1)]'
+            # await self.agenlen(1, core.eval(q))
+            # q = 'inet:dns:query=(tcp://1.2.3.4, "", 1) :name -> inet:fqdn'
+            # with self.getLoggerStream('synapse.lib.ast',
+            #                           'Cannot generate fqdn index bytes for a empty string') as stream:
+            #     await self.agenlen(0, core.eval(q))
+            #     self.true(stream.wait(1))
+            #
+            # q = 'inet:dns:query=(tcp://1.2.3.4, "foo*.haha.com", 1) :name -> inet:fqdn'
+            # with self.getLoggerStream('synapse.lib.ast',
+            #                           'Wild card may only appear at the beginning') as stream:
+            #     await self.agenlen(0, core.eval(q))
+            #     self.true(stream.wait(1))
 
     async def test_forms_dns_simple(self):
 

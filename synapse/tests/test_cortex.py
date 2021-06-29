@@ -661,6 +661,27 @@ class CortexTest(s_t_utils.SynTest):
             self.len(1, await alist(core.eval('test:str~="zip"')))
             self.len(1, await alist(core.eval('.favcolor~="^r"')))
 
+    async def test_cortex_autoadd_subofsubs(self):
+        async with self.getTestCore() as core:
+            import synapse.lib.snap as s_snap
+            iden = s_common.guid('test')
+            async with await core.snap() as snap:  # type: s_snap.Snap
+                node = await snap.addNode('test:guid', iden, props={'comp': (20, 'lulzlulz')})
+                print(node)
+                self.eq(node.get('comp:hehe'), 20)
+            for q in (
+                'test:guid',
+                'test:comp',
+                'test:int',
+            ):
+                print(f'{q=}')
+                nodes = await core.nodes(q)
+                for node in nodes:
+                    print(node)
+
+
+
+
     async def test_indxchop(self):
 
         async with self.getTestCore() as core:

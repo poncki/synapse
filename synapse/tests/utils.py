@@ -293,6 +293,8 @@ testmodel = {
         ('test:guid', {}, (
             ('size', ('test:int', {}), {}),
             ('tick', ('test:time', {}), {}),
+            ('comp', ('test:comp', {}), {}),
+            ('comp:hehe', ('test:int', {}), {}),
             ('posneg', ('test:sub', {}), {}),
             ('posneg:isbig', ('bool', {}), {}),
         )),
