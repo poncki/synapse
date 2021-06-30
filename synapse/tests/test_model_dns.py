@@ -53,6 +53,98 @@ class DnsModelTest(s_t_utils.SynTest):
             self.eq(norm, '::1')
             self.eq(info.get('subs'), {'ipv6': '::1'})
 
+    async def test_nedits(self):
+        nedits = [
+            (b'\xa8\xce\x9et\xb3\x82\xa0\xfe(\x81\xba\xb8\xa2\x8cf.5\xdc\xfb\xe2L\xca\x96\x9e*BN\x89\x8f\x1f\xea\xad',
+             'inet:dns:request',
+             [(0, ('8c5c64d1805d9db76de286d87d54c66e', 10), ()),
+              (2, ('query:name', 'vertex.link', None, 1), ()),
+              (2, ('query:name:fqdn', 'vertex.link', None, 17), ()),
+              (2, ('query:type', 255, None, 9), ()),
+              (2,
+               ('query', ('tcp://1.2.3.4', 'vertex.link', 255), None, 13),
+               [(b'\x97}\xbe\xe6|\xb5\xaf?#\xae\xd7=\xfeMy\x17\xa3l-Y\x07B\xaa\xddq\xe5\xf3J\x0f\x8a\x92\xf8',
+                 'inet:dns:query',
+                 [(0,
+                   (('tcp://1.2.3.4', 'vertex.link', 255), 13),
+                   [(b'\x97}\xbe\xe6|\xb5\xaf?#\xae\xd7=\xfeMy\x17\xa3l-Y\x07B\xaa\xddq\xe5\xf3J\x0f\x8a\x92\xf8',
+                     'inet:dns:query',
+                     [(2,
+                       ('client', 'tcp://1.2.3.4', None, 1),
+                       [(
+                           b"\x9e\x8f\xa6:\x1e\xa8T\xa6\x1e(\x9d\x16\xda\x06;\xf8\xda\xcf'\x1a}\xbe\x9a\x81\xa8[\xa4+zE$\x19",
+                           'inet:client',
+                           [(0,
+                             ('tcp://1.2.3.4', 1),
+                             [(
+                                 b"\x9e\x8f\xa6:\x1e\xa8T\xa6\x1e(\x9d\x16\xda\x06;\xf8\xda\xcf'\x1a}\xbe\x9a\x81\xa8[\xa4+zE$\x19",
+                                 'inet:client',
+                                 [(2, ('proto', 'tcp', None, 1), []),
+                                  (2,
+                                   ('ipv4', 16909060, None, 4),
+                                   [(
+                                       b' \x15;u\x8f\x9d^\xaa\xa3\x8eOJe\xc3m\xa7\x97\xc3\xe5\x9eT\x96 \xfa|H\x95\xe1\xa9 \x99\x1f',
+                                       'inet:ipv4',
+                                       [(0,
+                                         (16909060, 4),
+                                         [(
+                                             b' \x15;u\x8f\x9d^\xaa\xa3\x8eOJe\xc3m\xa7\x97\xc3\xe5\x9eT\x96 \xfa|H\x95\xe1\xa9 \x99\x1f',
+                                             'inet:ipv4',
+                                             [(2, ('type', 'unicast', None, 1), [])])])])])])])])]),
+                      (2, ('name', 'vertex.link', None, 1), []),
+                      (2,
+                       ('name:fqdn', 'vertex.link', None, 17),
+                       [(
+                           b'>\xcdQ\xe1B\xa5\xac\xfc\xdeB\xc0/\xf5\xc6\x83x\xbf\xaf\x1e\xafI\xfe\x97!U\x0bn}`\x13\xb6\x99',
+                           'inet:fqdn',
+                           [(0,
+                             ('vertex.link', 17),
+                             [(
+                                 b'>\xcdQ\xe1B\xa5\xac\xfc\xdeB\xc0/\xf5\xc6\x83x\xbf\xaf\x1e\xafI\xfe\x97!U\x0bn}`\x13\xb6\x99',
+                                 'inet:fqdn',
+                                 [(2, ('host', 'vertex', None, 1), []),
+                                  (2,
+                                   ('domain', 'link', None, 17),
+                                   [(
+                                       b'\x05\x8c|\xe1\x8eg\xe3L\xa2\x15-\xa6\xc8\xf4\xf4\xdc\x94\xc5\x80`\x05\x95\xb0+Gc\xa6\xd1'
+                                       b'\xbe\xf3T\x17',
+                                       'inet:fqdn',
+                                       [(0,
+                                         ('link', 17),
+                                         [(
+                                             b'\x05\x8c|\xe1\x8eg\xe3L\xa2\x15-\xa6\xc8\xf4\xf4\xdc\x94\xc5\x80`\x05\x95\xb0+Gc\xa6\xd1'
+                                             b'\xbe\xf3T\x17',
+                                             'inet:fqdn',
+                                             [(2, ('host', 'link', None, 1), []),
+                                              (2, ('issuffix', 1, None, 2), [])])])])])])])])]),
+                      (2, ('type', 255, None, 9), [])])]),
+                  # (2, ('name:fqdn', 'vertex.link', None, 17), ()) # duplicate EDIT_PROP_SET
+                  ]
+                 )
+                ]
+               )
+              ]
+             )
+        ]
+
+        async with self.getTestCore() as core:
+            layr = list(core.layers.keys())[0]
+            async with await core.snap() as snap:
+                nodes = await snap.applyNodeEdits(nedits)
+                for node in nodes:
+                    print(node)
+            print('LIFT=====================')
+            nodes = await core.nodes('.created -meta:source')
+            for node in nodes:
+                print(node)
+
+            print('------------------ layer edits ---------------')
+            from pprint import pprint
+            async for offset, edits in core.syncLayerNodeEdits(layr, 0, wait=False):
+                print(f'edit {offset} has {len(edits)} in it')
+                for edit in edits:
+                    pprint(edit, width=120)
+
     async def test_model_dns_request(self):
 
         async with self.getTestCore() as core:
@@ -68,17 +160,26 @@ class DnsModelTest(s_t_utils.SynTest):
                 self.eq(node.get('query:name'), 'vertex.link')
                 self.eq(node.get('query:name:fqdn'), 'vertex.link')
                 self.eq(node.get('query:type'), 255)
-                print(node.pack())
+                print(f'{node.pack()}')
             layr = list(core.layers.keys())[0]
             from pprint import pprint
+            print('--------------- WEEEEEEEEEEEEEEE --------------------')
             async for offset, edits in core.syncLayerNodeEdits(layr, 0, wait=False):
                 print(f'edit {offset} has {len(edits)} in it')
                 for edit in edits:
                     pprint(edit, width=120)
+            nodes = await core.nodes('inet:client')
+            for node in nodes:
+                print(node)
 
         print('========================')
+        return
         async with self.getTestCore() as core:
-            pode = (('inet:dns:request', 'ceeeb6a6629f3e5a2ff5a4b7602c2a4b'), {'iden': 'ac46edad411733487ec13bf8c1af793f1c870ff8c9a0ea8bca07b1e77d83ee59', 'tags': {}, 'props': {'.created': 1624997681161, 'query:name': 'vertex.link', 'query:name:fqdn': 'vertex.link', 'query:type': 255, 'query': ('tcp://1.2.3.4', 'vertex.link', 255)}, 'tagprops': {}, 'nodedata': {}})
+            pode = (('inet:dns:request', 'ceeeb6a6629f3e5a2ff5a4b7602c2a4b'),
+                    {'iden': 'ac46edad411733487ec13bf8c1af793f1c870ff8c9a0ea8bca07b1e77d83ee59', 'tags': {},
+                     'props': {'.created': 1624997681161, 'query:name': 'vertex.link', 'query:name:fqdn': 'vertex.link',
+                               'query:type': 255, 'query': ('tcp://1.2.3.4', 'vertex.link', 255)}, 'tagprops': {},
+                     'nodedata': {}})
             podes = [pode]
 
             feed = 'syn.nodes'
@@ -92,7 +193,6 @@ class DnsModelTest(s_t_utils.SynTest):
                 print(f'edit {offset} has {len(edits)} in it')
                 for edit in edits:
                     pprint(edit, width=120)
-
 
             #     # Ensure some remaining inet:dns:query:name:* props are broken out
             #     node = await snap.addNode('inet:dns:request', '*', {'query:name': '4.3.2.1.in-addr.arpa'})
@@ -176,7 +276,6 @@ class DnsModelTest(s_t_utils.SynTest):
     async def test_forms_dns_simple(self):
 
         async with self.getTestCore() as core:
-
             async with await core.snap() as snap:
                 # inet:dns:a
                 node = await snap.addNode('inet:dns:a', ('hehe.com', '1.2.3.4'))
@@ -253,7 +352,6 @@ class DnsModelTest(s_t_utils.SynTest):
         email0 = 'pennywise@vertex.ninja'
 
         async with self.getTestCore() as core:
-
             async with await core.snap() as snap:
                 # a record
                 props = {'a': (fqdn0, ip0)}
@@ -296,9 +394,7 @@ class DnsModelTest(s_t_utils.SynTest):
     async def test_model_dns_wild(self):
 
         async with self.getTestCore() as core:
-
             async with await core.snap() as snap:
-
                 wild = await snap.addNode('inet:dns:wild:a', ('vertex.link', '1.2.3.4'))
                 self.eq(wild.ndef, ('inet:dns:wild:a', ('vertex.link', 0x01020304)))
                 self.eq(wild.get('ipv4'), 0x01020304)

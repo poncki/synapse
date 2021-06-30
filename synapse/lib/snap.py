@@ -667,7 +667,10 @@ class Snap(s_base.Base):
 
         todo = s_common.todo('storNodeEdits', edits, meta)
         results = await self.core.dyncall(self.wlyr.iden, todo)
-
+        print('Got results')
+        from pprint import pprint
+        for r in results:
+            pprint(r, width=120)
         wlyr = self.wlyr
         nodes = []
         callbacks = []
@@ -837,7 +840,9 @@ class Snap(s_base.Base):
                 await self.warn(f'addNode: {e}')
                 return None
             raise
-
+        from pprint import pprint
+        print(f'applyNode edits on the following edits:')
+        pprint(adds, width=120)
         nodes = await self.applyNodeEdits(adds)
         assert len(nodes) >= 1
 

@@ -1843,10 +1843,13 @@ class Layer(s_nexus.Pusher):
         results = {}
 
         nodeedits = collections.deque(nodeedits)
+        from pprint import pprint
+
+        print('!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!')
         while nodeedits:
 
             buid, form, edits = nodeedits.popleft()
-
+            print(f'{buid=} {form=} {edits=}')
             sode = self._getStorNode(buid)
 
             changes = []
@@ -1866,6 +1869,8 @@ class Layer(s_nexus.Pusher):
 
             if changes:
                 edited = True
+
+        print('??????????????????????????????????????????/')
 
         flatedits = list(results.values())
 
@@ -1915,7 +1920,7 @@ class Layer(s_nexus.Pusher):
         await self._push('edits', nodeedits, meta)
 
     def _editNodeAdd(self, buid, form, edit, sode, meta):
-
+        print(f'{form=} {edit=}')
         valt = edit[1]
         valu, stortype = valt
         if sode.get('valu') == valt:
@@ -2002,6 +2007,7 @@ class Layer(s_nexus.Pusher):
     def _editPropSet(self, buid, form, edit, sode, meta):
 
         prop, valu, oldv, stortype = edit[1]
+        print(f'{form=} {prop=} {valu=}')
 
         oldv, oldt = sode['props'].get(prop, (None, None))
 

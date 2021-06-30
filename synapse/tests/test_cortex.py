@@ -679,9 +679,6 @@ class CortexTest(s_t_utils.SynTest):
                 for node in nodes:
                     print(node)
 
-
-
-
     async def test_indxchop(self):
 
         async with self.getTestCore() as core:
