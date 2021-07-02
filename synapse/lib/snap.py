@@ -521,8 +521,8 @@ class Snap(s_base.Base):
 
     async def getNodeAdds(self, form, valu, props, addnode=True):
 
-        async def _getadds(f, p, formnorm, forminfo, doaddnode=True):
-            print(f'INIT GETADDS {f.name=} {p=} {formnorm=}')
+        async def _getadds(f, p, formnorm, forminfo, doaddnode=True, depth=0):
+            print(f'[{depth}] INIT GETADDS {f.name=} {p=} {formnorm=}')
             if f.locked:
                 mesg = f'Form {f.full} is locked due to deprecation.'
                 raise s_exc.IsDeprLocked(mesg=mesg)
@@ -533,6 +533,9 @@ class Snap(s_base.Base):
             formsubs = forminfo.get('subs', {})
             for subname, subvalu in formsubs.items():
                 p[subname] = subvalu
+
+            if p:
+                print(f'PROPS {p=}')
 
             for propname, propvalu in p.items():
                 print(f'{propname=} {propvalu=}')
@@ -573,7 +576,7 @@ class Snap(s_base.Base):
                         do_subedit = node is None
 
                     if do_subedit:
-                        subedits.extend([x async for x in _getadds(ndefform, {}, ndefnorm, ndefinfo)])
+                        subedits.extend([x async for x in _getadds(ndefform, {}, ndefnorm, ndefinfo, depth=depth+1)])
 
                 elif isinstance(prop.type, s_types.Array):
                     arrayform = self.core.model.form(prop.type.arraytype.name)
@@ -593,11 +596,13 @@ class Snap(s_base.Base):
                                 if node is not None:
                                     continue
 
-                            subedits.extend([x async for x in _getadds(arrayform, {}, arraynorm, arrayinfo)])
+                            subedits.extend([x async for x in _getadds(arrayform, {}, arraynorm, arrayinfo, depth=depth+1)])
 
                 propsubs = typeinfo.get('subs')
                 if propsubs is not None:
+                    print(f'[{depth}] Making propsubs edits')
                     for subname, subvalu in propsubs.items():
+                        print(f'Checking {subname}={subvalu}')
                         fullname = f'{prop.full}:{subname}'
                         subprop = self.core.model.prop(fullname)
                         if subprop is None:
@@ -609,6 +614,7 @@ class Snap(s_base.Base):
                         print(f'Making EDIT_PROP_SET {fullname=} {subprop.name=}, {subnorm=} BLIND')
 
                         edits.append((s_layer.EDIT_PROP_SET, (subprop.name, subnorm, None, subprop.type.stortype), ()))
+                    print(f'[{depth}] Done making probsubs edits')
 
                 propform = self.core.model.form(prop.type.name)
                 if propform is not None:
@@ -619,7 +625,7 @@ class Snap(s_base.Base):
                         doedit = node is None
 
                     if doedit:
-                        subedits.extend([x async for x in _getadds(propform, {}, propnorm, typeinfo)])
+                        subedits.extend([x async for x in _getadds(propform, {}, propnorm, typeinfo, depth=depth+1)])
 
                 if subedits:
                     print(f'Making EDIT_PROP_SET for {f.name=} with subedits {propname=} {propnorm=}')
@@ -633,6 +639,9 @@ class Snap(s_base.Base):
                 else:
                     print(f'{propname=} is NOT IN form subs!')
                     edits.append(edit)
+
+            if p:
+                print('DONE WITH PROPS')
 
             buid = s_common.buid((f.name, formnorm))
 
@@ -648,7 +657,7 @@ class Snap(s_base.Base):
             else:
                 yield (buid, f.name, edits)
 
-            print('FINI GETADDS ')
+            print(f'[{depth}] FINI GETADDS ')
 
         if self.core.maxnodes is not None and self.core.maxnodes <= self.core.nodecount:
             mesg = f'Cortex is at node:count limit: {self.core.maxnodes}'
