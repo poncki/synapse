@@ -273,6 +273,24 @@ class DnsModelTest(s_t_utils.SynTest):
             #     await self.agenlen(0, core.eval(q))
             #     self.true(stream.wait(1))
 
+    async def test_form_query(self):
+        async with self.getTestCore() as core:
+            async with await core.snap() as snap:
+                # Ensure that subs are broken out for inet:dns:query
+                node = await snap.addNode('inet:dns:query', ('tcp://1.2.3.4', 'vertex.link', 255))
+                self.eq(node.get('client'), 'tcp://1.2.3.4')
+                self.eq(node.get('name'), 'vertex.link')
+                self.eq(node.get('name:fqdn'), 'vertex.link')
+                self.eq(node.get('type'), 255)
+
+            layr = list(core.layers.keys())[0]
+            from pprint import pprint
+            print('AND THE FINAL EDITS !++!+!+!!+!+!+!+!+!+!+!+!+!+!++!+!')
+            async for offset, edits in core.syncLayerNodeEdits(layr, 0, wait=False):
+                print(f'edit {offset} has {len(edits)} in it')
+                for edit in edits:
+                    pprint(edit, width=120)
+
     async def test_forms_dns_simple(self):
 
         async with self.getTestCore() as core:

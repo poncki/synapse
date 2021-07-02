@@ -522,7 +522,7 @@ class Snap(s_base.Base):
     async def getNodeAdds(self, form, valu, props, addnode=True):
 
         async def _getadds(f, p, formnorm, forminfo, doaddnode=True):
-            print(f'{f.name=} {p=} {formnorm=}')
+            print(f'INIT GETADDS {f.name=} {p=} {formnorm=}')
             if f.locked:
                 mesg = f'Form {f.full} is locked due to deprecation.'
                 raise s_exc.IsDeprLocked(mesg=mesg)
@@ -603,10 +603,10 @@ class Snap(s_base.Base):
                         if subprop is None:
                             print(f'Skipping subprop = {fullname=}')
                             continue
-                        print(f'Making subprop {fullname=}')
                         assert subprop.type.stortype is not None
 
                         subnorm, subinfo = subprop.type.norm(subvalu)
+                        print(f'Making EDIT_PROP_SET {fullname=} {subprop.name=}, {subnorm=} BLIND')
 
                         edits.append((s_layer.EDIT_PROP_SET, (subprop.name, subnorm, None, subprop.type.stortype), ()))
 
@@ -621,10 +621,17 @@ class Snap(s_base.Base):
                     if doedit:
                         subedits.extend([x async for x in _getadds(propform, {}, propnorm, typeinfo)])
 
+                if subedits:
+                    print(f'Making EDIT_PROP_SET for {f.name=} with subedits {propname=} {propnorm=}')
+                else:
+                    print(f'Making EDIT_PROP_SET for {f.name=} with NO subedits {propname=} {propnorm=}')
+
                 edit: s_layer.EditT = (s_layer.EDIT_PROP_SET, (propname, propnorm, None, prop.type.stortype), subedits)
                 if propname in formsubs:
+                    print(f'{propname=} is in form subs!')
                     topsubedits.append(edit)
                 else:
+                    print(f'{propname=} is NOT IN form subs!')
                     edits.append(edit)
 
             buid = s_common.buid((f.name, formnorm))
@@ -641,6 +648,8 @@ class Snap(s_base.Base):
             else:
                 yield (buid, f.name, edits)
 
+            print('FINI GETADDS ')
+
         if self.core.maxnodes is not None and self.core.maxnodes <= self.core.nodecount:
             mesg = f'Cortex is at node:count limit: {self.core.maxnodes}'
             raise s_exc.HitLimit(mesg=mesg)
@@ -649,7 +658,8 @@ class Snap(s_base.Base):
             props = {}
 
         norm, info = form.type.norm(valu)
-        return [x async for x in _getadds(form, props, norm, info, doaddnode=addnode)]
+        ret = [x async for x in _getadds(form, props, norm, info, doaddnode=addnode)]
+        return ret
 
     async def applyNodeEdit(self, edit):
         nodes = await self.applyNodeEdits((edit,))
