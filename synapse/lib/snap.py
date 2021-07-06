@@ -608,6 +608,9 @@ class Snap(s_base.Base):
                         if subprop is None:
                             print(f'Skipping subprop = {fullname=}')
                             continue
+                        if subprop.name in p:
+                            print(f'Skipping subprop = {fullname=} b/c we already have it!')
+                            continue
                         assert subprop.type.stortype is not None
 
                         subnorm, subinfo = subprop.type.norm(subvalu)
