@@ -576,7 +576,7 @@ class Snap(s_base.Base):
                         do_subedit = node is None
 
                     if do_subedit:
-                        subedits.extend([x async for x in _getadds(ndefform, {}, ndefnorm, ndefinfo, depth=depth+1)])
+                        subedits.extend([x async for x in _getadds(ndefform, {}, ndefnorm, ndefinfo, depth=depth + 1)])
 
                 elif isinstance(prop.type, s_types.Array):
                     arrayform = self.core.model.form(prop.type.arraytype.name)
@@ -596,7 +596,7 @@ class Snap(s_base.Base):
                                 if node is not None:
                                     continue
 
-                            subedits.extend([x async for x in _getadds(arrayform, {}, arraynorm, arrayinfo, depth=depth+1)])
+                            subedits.extend([x async for x in _getadds(arrayform, {}, arraynorm, arrayinfo, depth=depth + 1)])
 
                 propsubs = typeinfo.get('subs')
                 if propsubs is not None:
@@ -628,7 +628,7 @@ class Snap(s_base.Base):
                         doedit = node is None
 
                     if doedit:
-                        subedits.extend([x async for x in _getadds(propform, {}, propnorm, typeinfo, depth=depth+1)])
+                        subedits.extend([x async for x in _getadds(propform, {}, propnorm, typeinfo, depth=depth + 1)])
 
                 if subedits:
                     print(f'Making EDIT_PROP_SET for {f.name=} with subedits {propname=} {propnorm=}')
