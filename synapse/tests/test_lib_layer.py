@@ -137,6 +137,14 @@ class LayerTest(s_t_utils.SynTest):
             self.len(1, errors)
             self.eq(errors[0][0], 'BadSodeSchema')
 
+            sode['tagprops'].pop('bar')
+            sode['tagprops'][('bar', 'newp')] = ('newp', 2)
+            layr.setSodeDirty(buid, sode, sode.get('form'))
+
+            errors = [e async for e in core.getLayer().verify()]
+            self.len(1, errors)
+            self.eq(errors[0][0], 'BadSodeSchema')
+
     async def test_layer_abrv(self):
 
         async with self.getTestCore() as core:

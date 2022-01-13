@@ -1556,6 +1556,9 @@ class Layer(s_nexus.Pusher):
         except s_exc.SchemaViolation as e:
             yield ('BadSodeSchema', {'buid': s_common.ehex(buid), 'mesg': e.get('mesg'),
                                      'name': e.get('name')})
+        except Exception as e:
+            yield ('BadSodeSchema', {'buid': s_common.ehex(buid),
+                                     'mesg': f'Unknown Schema error: {repr(e)}'})
 
     async def pack(self):
         ret = self.layrinfo.pack()
