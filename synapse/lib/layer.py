@@ -78,9 +78,8 @@ import synapse.lib.cell as s_cell
 import synapse.lib.cache as s_cache
 import synapse.lib.nexus as s_nexus
 import synapse.lib.queue as s_queue
-import synapse.lib.urlhelp as s_urlhelp
-
 import synapse.lib.config as s_config
+import synapse.lib.urlhelp as s_urlhelp
 import synapse.lib.lmdbslab as s_lmdbslab
 import synapse.lib.slabseqn as s_slabseqn
 
@@ -103,6 +102,45 @@ reqValidLdef = s_config.getJsValidator({
     'additionalProperties': True,
     'required': ['iden', 'creator', 'lockmemory'],
 })
+
+
+sode_schema = {
+    'type': 'object',
+    'properties': {
+        'form': {'type': 'string'},
+        'valu': {'type': 'array', 'minItems': 2, 'maxItems': 2, 'items': [
+            {'type': ['string', 'number', 'array', 'object', 'boolean', ]},
+            {'type': 'integer', 'minimum': 1}
+        ]},
+        'props': {'type': 'object',
+                  'patternProperties': {
+                      '.*': {'type': 'array', 'items': [
+                          {'type': ['string', 'number', 'array', 'object', 'boolean', ]},
+                          {'type': 'integer', 'minimum': 1},
+                      ]}}},
+        'tags': {'type': 'object',
+                 'patternProperties': {
+                     '.*': {'oneOf': [
+                         {'type': 'array', 'items': {'type': 'null'}, 'minItems': 2, 'maxItems': 2, },
+                         {'type': 'array', 'items': {'type': 'integer', 'minimum': 0, 'maximum': 0x7fffffffffffffff},
+                          'minItems': 2, 'maxItems': 2, },
+                     ]}
+                 }},
+        'tagprops': {'type': 'object',
+                     'patternProperties': {
+                         '.*': {'type': 'object',
+                                'patternProperties': {
+                                    '.*': {'type': 'array', 'items': [
+                                               {'type': ['string', 'number', 'array', 'object', 'boolean', ]},
+                                               {'type': 'integer', 'minimum': 1}
+                                           ]}
+                                }}
+                     }},
+    },
+    'additionalProperties': False,
+    'required': ['form', 'valu', ]
+}
+reqValidSodeDef = s_config.getJsValidator(sode_schema)
 
 class LayerApi(s_cell.CellApi):
 
@@ -1511,6 +1549,13 @@ class Layer(s_nexus.Pusher):
                 except IndexError as e:
                     yield ('NoStorTypeForProp', {'buid': s_common.ehex(buid), 'form': form, 'prop': propname,
                                                  'stortype': stortype})
+
+        try:
+            vsode = dict(sode)
+            reqValidSodeDef(vsode)
+        except s_exc.SchemaViolation as e:
+            yield ('BadSodeSchema', {'buid': s_common.ehex(buid), 'mesg': e.get('mesg'),
+                                     'name': e.get('name')})
 
     async def pack(self):
         ret = self.layrinfo.pack()

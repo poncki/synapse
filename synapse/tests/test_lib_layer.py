@@ -32,7 +32,8 @@ class LayerTest(s_t_utils.SynTest):
 
         async with self.getTestCore() as core:
 
-            nodes = await core.nodes('[ inet:ipv4=1.2.3.4 :asn=20 +#foo.bar ]')
+            await core.stormlist('$lib.model.ext.addTagProp(_comment, (str, $lib.dict()), $lib.dict())')
+            nodes = await core.nodes('[ inet:ipv4=1.2.3.4 :asn=20 +#foo.bar:_comment="words" +#foo=(2021,2022) ]')
             buid = nodes[0].buid
 
             errors = [e async for e in core.getLayer().verify()]
@@ -120,6 +121,21 @@ class LayerTest(s_t_utils.SynTest):
             self.eq(errors[0][0], 'NoStorTypeForProp')
             self.eq(errors[1][0], 'NoStorTypeForProp')
             self.eq(errors[2][0], 'SpurPropKeyForIndx')
+
+        # break sode schema
+        async with self.getTestCore() as core:
+            await core.stormlist('$lib.model.ext.addTagProp(_comment, (str, $lib.dict()), $lib.dict())')
+            nodes = await core.nodes('[ inet:ipv4=1.2.3.4 :asn=20 +#foo:_comment="words" ]')
+            buid = nodes[0].buid
+
+            layr = core.getLayer()
+            sode = await layr.getStorNode(buid)
+            sode['tagprops']['bar'] = ('newp', 2)
+            layr.setSodeDirty(buid, sode, sode.get('form'))
+
+            errors = [e async for e in core.getLayer().verify()]
+            self.len(1, errors)
+            self.eq(errors[0][0], 'BadSodeSchema')
 
     async def test_layer_abrv(self):
 
